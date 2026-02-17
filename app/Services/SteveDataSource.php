@@ -166,26 +166,92 @@ class SteveDataSource
 
     public function getTransactionsForMonitoring(int $recentLimit = 20): array
     {
-        $all = $this->getRecentTransactions(1000);
+        if (!$this->usingRedis()) {
+            $all = $this->getRecentTransactions(1000);
 
-        $active = [];
-        $completed = [];
+            $active = [];
+            $completed = [];
+            foreach ($all as $tx) {
+                if (empty($tx->stop_timestamp)) {
+                    $active[] = $tx;
+                } else {
+                    $completed[] = $tx;
+                }
+            }
 
-        foreach ($all as $tx) {
-            $isActive = empty($tx->stop_timestamp);
-            if ($isActive) {
-                $active[] = $tx;
-            } else {
-                $completed[] = $tx;
+            usort($completed, fn ($a, $b) => ((int) ($b->transaction_pk ?? 0)) <=> ((int) ($a->transaction_pk ?? 0)));
+            $completed = array_slice($completed, 0, $recentLimit);
+            $merged = array_merge($active, $completed);
+            usort($merged, fn ($a, $b) => ((int) ($b->transaction_pk ?? 0)) <=> ((int) ($a->transaction_pk ?? 0)));
+            return $merged;
+        }
+
+        $prefix = $this->redisPrefix();
+
+        // Active = started but not stopped
+        $startKeys = $this->redis()->smembers("{$prefix}:index:transaction_start");
+        $stopKeys = $this->redis()->smembers("{$prefix}:index:transaction_stop");
+
+        $started = [];
+        foreach ($startKeys as $k) {
+            $row = $this->normalizeRedisRow($this->redis()->hgetall($k));
+            $tx = (int) ($row['transaction_pk'] ?? 0);
+            if ($tx > 0) {
+                $started[$tx] = true;
             }
         }
 
+        $stopped = [];
+        foreach ($stopKeys as $k) {
+            $row = $this->normalizeRedisRow($this->redis()->hgetall($k));
+            $tx = (int) ($row['transaction_pk'] ?? 0);
+            if ($tx > 0) {
+                $stopped[$tx] = true;
+            }
+        }
+
+        $activeIds = [];
+        foreach ($started as $tx => $_) {
+            if (!isset($stopped[$tx])) {
+                $activeIds[] = (int) $tx;
+            }
+        }
+
+        $rows = [];
+        foreach ($activeIds as $tx) {
+            $txRow = $this->getTransactionById($tx);
+            if ($txRow) {
+                $rows[] = $txRow;
+                continue;
+            }
+
+            // fallback from transaction_start key
+            $start = $this->normalizeRedisRow($this->redis()->hgetall("{$prefix}:transaction_start:{$tx}"));
+            if ($start) {
+                $rows[] = (object) [
+                    'transaction_pk' => $start['transaction_pk'] ?? $tx,
+                    'connector_pk' => $start['connector_pk'] ?? null,
+                    'id_tag' => $start['id_tag'] ?? null,
+                    'start_timestamp' => $start['start_timestamp'] ?? null,
+                    'start_value' => $start['start_value'] ?? 0,
+                    'stop_timestamp' => null,
+                    'stop_value' => null,
+                    'stop_reason' => null,
+                ];
+            }
+        }
+
+        $completed = [];
+        foreach ($this->getRecentTransactions(300) as $tx) {
+            if (!empty($tx->stop_timestamp)) {
+                $completed[] = $tx;
+            }
+        }
         usort($completed, fn ($a, $b) => ((int) ($b->transaction_pk ?? 0)) <=> ((int) ($a->transaction_pk ?? 0)));
         $completed = array_slice($completed, 0, $recentLimit);
 
-        $merged = array_merge($active, $completed);
+        $merged = array_merge($rows, $completed);
         usort($merged, fn ($a, $b) => ((int) ($b->transaction_pk ?? 0)) <=> ((int) ($a->transaction_pk ?? 0)));
-
         return $merged;
     }
 

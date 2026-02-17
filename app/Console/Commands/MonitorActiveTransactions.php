@@ -42,7 +42,11 @@ class MonitorActiveTransactions extends Command
     private function processTransaction($tx, SteveDataSource $source)
     {
         $txId = $tx->transaction_pk ?? $tx->id; // Handle schema variations
-        $tagCode = $tx->id_tag;
+        $tagCode = $tx->id_tag ?? null;
+        $startTimestamp = $tx->start_timestamp ?? null;
+        $stopTimestamp = $tx->stop_timestamp ?? null;
+        $stopValue = $tx->stop_value ?? null;
+        $stopReason = $tx->stop_reason ?? null;
         
         $this->line("👉 Analyzing Tx #{$txId} (Tag: {$tagCode})");
 
@@ -57,10 +61,10 @@ class MonitorActiveTransactions extends Command
         // For Completed Txs, Steve has stop_value directly in transaction table
         // For Active Txs, get latest from connector_meter_value
         
-        $isCompleted = !is_null($tx->stop_timestamp);
+        $isCompleted = !is_null($tx->stop_timestamp ?? null);
         
         if ($isCompleted) {
-            $currentWh = floatval($tx->stop_value);
+            $currentWh = floatval($stopValue);
         } else {
             // Get Energy (Wh) from meter_values
             $lastEnergyMeter = $source->getLatestEnergyMeterValue((int) $txId);
@@ -92,7 +96,7 @@ class MonitorActiveTransactions extends Command
         $pricing = ['session_fee' => 0, 'energy_cost' => 0, 'time_fee' => 0, 'total' => 0, 'rate' => 0, 'cost_rate' => 0];
 
         if ($tariff) {
-            $pricing = $this->calculateCost($consumedKwh, $tx->start_timestamp, $tariff, $tx->stop_timestamp);
+            $pricing = $this->calculateCost($consumedKwh, $startTimestamp, $tariff, $stopTimestamp);
             $cost = $pricing['total'];
             $rateKwh = $pricing['rate'];
             
@@ -130,7 +134,7 @@ class MonitorActiveTransactions extends Command
              if ($isCompleted) {
                  $existingSession = ChargingSession::where('transaction_id', $txId)->first();
                  $wasActive = $existingSession && $existingSession->status !== 'Completed';
-                 $stopTime = Carbon::parse($tx->stop_timestamp);
+                 $stopTime = Carbon::parse($stopTimestamp);
                  $isNewAndRecent = !$existingSession && $stopTime->gt(Carbon::now()->subHour());
 
                  if ($wasActive || $isNewAndRecent) {
@@ -178,11 +182,11 @@ class MonitorActiveTransactions extends Command
                 'rate_kwh' => $rateKwh,
                 'currency' => $currency,
                 'status' => $creditBlocked ? 'CreditStopped' : ($isCompleted ? 'Completed' : 'Active'),
-                'start_time' => $tx->start_timestamp,
-                'stop_time' => $tx->stop_timestamp,
+                'start_time' => $startTimestamp,
+                'stop_time' => $stopTimestamp,
                 'meter_start' => $startWh,
                 'meter_stop' => $currentWh,
-                'stop_reason' => $creditBlocked ? 'CreditStopped' : $tx->stop_reason,
+                'stop_reason' => $creditBlocked ? 'CreditStopped' : $stopReason,
                 'current_soc' => $currentSoC,
                 'updated_at' => now(),
             ]
