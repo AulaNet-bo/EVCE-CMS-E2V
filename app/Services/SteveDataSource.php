@@ -154,11 +154,39 @@ class SteveDataSource
         $rows = [];
         foreach ($keys as $key) {
             $raw = $this->normalizeRedisRow($this->redis()->hgetall($key));
+            if (!$raw) {
+                continue;
+            }
             $rows[] = (object) $this->enrichTransaction($raw);
         }
 
         usort($rows, fn ($a, $b) => ((int) ($b->transaction_pk ?? 0)) <=> ((int) ($a->transaction_pk ?? 0)));
         return array_slice($rows, 0, $limit);
+    }
+
+    public function getTransactionsForMonitoring(int $recentLimit = 20): array
+    {
+        $all = $this->getRecentTransactions(1000);
+
+        $active = [];
+        $completed = [];
+
+        foreach ($all as $tx) {
+            $isActive = empty($tx->stop_timestamp);
+            if ($isActive) {
+                $active[] = $tx;
+            } else {
+                $completed[] = $tx;
+            }
+        }
+
+        usort($completed, fn ($a, $b) => ((int) ($b->transaction_pk ?? 0)) <=> ((int) ($a->transaction_pk ?? 0)));
+        $completed = array_slice($completed, 0, $recentLimit);
+
+        $merged = array_merge($active, $completed);
+        usort($merged, fn ($a, $b) => ((int) ($b->transaction_pk ?? 0)) <=> ((int) ($a->transaction_pk ?? 0)));
+
+        return $merged;
     }
 
     public function getTransactionById(int $transactionPk): ?object
@@ -209,6 +237,46 @@ class SteveDataSource
                 continue;
             }
 
+            if (!$latest || (($row['value_timestamp'] ?? '') > ($latest['value_timestamp'] ?? ''))) {
+                $latest = $row;
+            }
+        }
+
+        return $latest ? (object) $latest : null;
+    }
+
+    public function getLatestEnergyMeterValue(int $transactionPk): ?object
+    {
+        // Primary measurand used by simulator and most OCPP stacks
+        $mv = $this->getLatestMeterValue($transactionPk, 'Energy.Active.Import.Register');
+        if ($mv) {
+            return $mv;
+        }
+
+        // Fallback: any energy measurand
+        if (!$this->usingRedis()) {
+            return DB::connection('steve')->table('connector_meter_value')
+                ->where('transaction_pk', $transactionPk)
+                ->where('measurand', 'like', 'Energy.%')
+                ->orderBy('value_timestamp', 'desc')
+                ->first();
+        }
+
+        $prefix = $this->redisPrefix();
+        $keys = $this->redis()->smembers("{$prefix}:index:meter_values");
+        $latest = null;
+        foreach ($keys as $key) {
+            $row = $this->normalizeRedisRow($this->redis()->hgetall($key));
+            if (!$row) {
+                continue;
+            }
+            if ((int) ($row['transaction_pk'] ?? -1) !== $transactionPk) {
+                continue;
+            }
+            $m = (string) ($row['measurand'] ?? '');
+            if (stripos($m, 'Energy.') !== 0) {
+                continue;
+            }
             if (!$latest || (($row['value_timestamp'] ?? '') > ($latest['value_timestamp'] ?? ''))) {
                 $latest = $row;
             }

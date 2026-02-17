@@ -27,7 +27,7 @@ class MonitorActiveTransactions extends Command
         $this->info("🔍 Scanning ALL transactions (Active & Recently Completed) in Steve ({$source->source()})...");
 
         try {
-            $recentTxs = collect($source->getRecentTransactions(20));
+            $recentTxs = collect($source->getTransactionsForMonitoring(20));
 
             foreach ($recentTxs as $tx) {
                 $this->processTransaction($tx, $source);
@@ -63,7 +63,7 @@ class MonitorActiveTransactions extends Command
             $currentWh = floatval($tx->stop_value);
         } else {
             // Get Energy (Wh) from meter_values
-            $lastEnergyMeter = $source->getLatestMeterValue((int) $txId, 'Energy.Active.Import.Register');
+            $lastEnergyMeter = $source->getLatestEnergyMeterValue((int) $txId);
             $currentWh = $lastEnergyMeter ? floatval($lastEnergyMeter->value) : 0;
         }
 
