@@ -6,9 +6,9 @@ use App\Models\ChargingSession;
 use App\Models\Connector;
 use App\Models\RfidTag;
 use App\Models\Station;
-use App\Models\Steve\ChargingSession as SteveSession;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
+use App\Services\SteveDataSource;
 
 class SyncSteveSessions extends Command
 {
@@ -26,27 +26,21 @@ class SyncSteveSessions extends Command
      */
     protected $description = 'Syncs charging sessions from Steve DB into CMS charging_sessions table';
 
-    public function handle(): int
+    public function handle(SteveDataSource $source): int
     {
-        $this->info('Starting Steve session sync...');
+        $this->info("Starting Steve session sync ({$source->source()})...");
 
         try {
             $limit = (int) $this->option('limit');
             $since = $this->option('since');
 
-            $query = SteveSession::query();
-
-            if ($since) {
-                $query->where('start_timestamp', '>=', $since);
-            } else {
-                // Use max transaction_id in CMS to fetch only newer ones
-                $maxTx = ChargingSession::max('transaction_id');
-                if ($maxTx) {
-                    $query->where('transaction_pk', '>', (int) $maxTx);
-                }
+            $maxTx = null;
+            if (!$since) {
+                $maxTxVal = ChargingSession::max('transaction_id');
+                $maxTx = $maxTxVal ? (int) $maxTxVal : null;
             }
 
-            $sessions = $query->orderBy('transaction_pk', 'asc')->limit($limit)->get();
+            $sessions = collect($source->getSessionsForSync($since, $maxTx, $limit));
 
             if ($sessions->isEmpty()) {
                 $this->info('No new sessions to sync.');
@@ -56,9 +50,9 @@ class SyncSteveSessions extends Command
             $synced = 0;
             foreach ($sessions as $s) {
                 // Resolve Station + Connector
-                $steveConnector = $s->connector; // App\Models\Steve\Connector
+                $steveConnector = $source->getConnectorByPk((int) ($s->connector_pk ?? 0));
                 if (!$steveConnector) {
-                    $this->warn("Skipping tx {$s->transaction_pk}: connector not found in Steve.");
+                    $this->warn("Skipping tx {$s->transaction_pk}: connector not found in Steve source.");
                     continue;
                 }
 

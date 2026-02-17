@@ -5,8 +5,8 @@ namespace App\Console\Commands;
 use App\Models\Connector;
 use App\Models\Station;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use App\Services\SteveDataSource;
 
 class SyncSteveStatus extends Command
 {
@@ -27,36 +27,17 @@ class SyncSteveStatus extends Command
     /**
      * Execute the console command.
      */
-    public function handle()
+    public function handle(SteveDataSource $source)
     {
-        $this->info("Starting synchronization with Steve OCPP Server...");
+        $this->info("Starting synchronization with Steve OCPP Server ({$source->source()})...");
 
         try {
-            // 1. Fetch live connectors from Steve DB
-            // We need to JOIN connector, charge_box, and connector_status to get the full picture
-            // The status is in 'connector_status' table (latest entry per connector)
-            
-            $steveConnectors = DB::connection('steve')
-                ->table('connector')
-                ->join('charge_box', 'connector.charge_box_id', '=', 'charge_box.charge_box_id')
-                ->select(
-                    'charge_box.charge_box_id', 
-                    'connector.connector_id', 
-                    'charge_box.last_heartbeat_timestamp',
-                    'connector.connector_pk'
-                )
-                ->get();
+            $steveConnectors = collect($source->getConnectorsWithStatus());
 
-            $this->info("Found " . $steveConnectors->count() . " connectors in Steve DB.");
+            $this->info("Found " . $steveConnectors->count() . " connectors in Steve source.");
 
             foreach ($steveConnectors as $sConnector) {
-                // Find Latest Status
-                $latestStatus = DB::connection('steve')->table('connector_status')
-                    ->where('connector_pk', $sConnector->connector_pk)
-                    ->orderBy('status_timestamp', 'desc')
-                    ->first();
-                
-                $status = $latestStatus ? $latestStatus->status : 'Unknown';
+                $status = $sConnector->status ?? 'Unknown';
 
                 // Find or Create Station in CMS
                 $station = Station::firstOrCreate(

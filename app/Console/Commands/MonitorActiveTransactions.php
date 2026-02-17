@@ -15,29 +15,22 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use GuzzleHttp\Cookie\CookieJar;
 use Carbon\Carbon;
+use App\Services\SteveDataSource;
 
 class MonitorActiveTransactions extends Command
 {
     protected $signature = 'steve:monitor-transactions';
     protected $description = 'Monitors active transactions in Steve, calculates cost, and enforces credit limits';
 
-    public function handle()
+    public function handle(SteveDataSource $source)
     {
-        $this->info("🔍 Scanning ALL transactions (Active & Recently Completed) in Steve...");
+        $this->info("🔍 Scanning ALL transactions (Active & Recently Completed) in Steve ({$source->source()})...");
 
         try {
-            // 0. Clean Active Local Sessions first
-            // ... (keep cleaning logic if needed, but let's focus on syncing ALL relevant ones)
-
-            // 1. Fetch recent transactions from Steve (e.g., last 24h or limit 50) to sync everything
-            // This catches completed transactions that happened between cron runs
-            $recentTxs = DB::connection('steve')->table('transaction')
-                ->orderBy('transaction_pk', 'desc')
-                ->limit(20) // Sync last 20 transactions always to ensure data consistency
-                ->get();
+            $recentTxs = collect($source->getRecentTransactions(20));
 
             foreach ($recentTxs as $tx) {
-                $this->processTransaction($tx);
+                $this->processTransaction($tx, $source);
             }
 
         } catch (\Exception $e) {
@@ -46,7 +39,7 @@ class MonitorActiveTransactions extends Command
         }
     }
 
-    private function processTransaction($tx)
+    private function processTransaction($tx, SteveDataSource $source)
     {
         $txId = $tx->transaction_pk ?? $tx->id; // Handle schema variations
         $tagCode = $tx->id_tag;
@@ -70,21 +63,12 @@ class MonitorActiveTransactions extends Command
             $currentWh = floatval($tx->stop_value);
         } else {
             // Get Energy (Wh) from meter_values
-            $lastEnergyMeter = DB::connection('steve')->table('connector_meter_value')
-                ->where('transaction_pk', $txId)
-                ->where('measurand', 'Energy.Active.Import.Register')
-                ->orderBy('value_timestamp', 'desc')
-                ->first();
-                
+            $lastEnergyMeter = $source->getLatestMeterValue((int) $txId, 'Energy.Active.Import.Register');
             $currentWh = $lastEnergyMeter ? floatval($lastEnergyMeter->value) : 0;
         }
 
         // Get SoC (%) - Always check meter values
-        $lastSoCMeter = DB::connection('steve')->table('connector_meter_value')
-            ->where('transaction_pk', $txId)
-            ->where('measurand', 'SoC')
-            ->orderBy('value_timestamp', 'desc')
-            ->first();
+        $lastSoCMeter = $source->getLatestMeterValue((int) $txId, 'SoC');
         $currentSoC = $lastSoCMeter ? intval($lastSoCMeter->value) : 0;
 
         // Calculate Consumption
@@ -95,7 +79,7 @@ class MonitorActiveTransactions extends Command
 
         // 5. Calculate Cost
         // Get ChargeBox ID
-        $connector = DB::connection('steve')->table('connector')->where('connector_pk', $tx->connector_pk)->first();
+        $connector = $source->getConnectorByPk((int) ($tx->connector_pk ?? 0));
         $chargeBoxId = $connector->charge_box_id ?? 'Unknown';
         
         $station = Station::where('charge_box_id', $chargeBoxId)->first();

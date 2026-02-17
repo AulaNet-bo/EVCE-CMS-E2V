@@ -54,6 +54,23 @@ In order to ensure that the Laravel community is welcoming to all, please review
 
 If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
 
+## Steve source mode (MySQL vs Redis)
+
+The CMS now supports choosing the Steve data source for sync commands:
+
+- `STEVE_DATA_SOURCE=redis` (recommended): reads from `steve-observer` Redis cache
+- `STEVE_DATA_SOURCE=mysql`: reads directly from Steve MySQL
+
+Required when using Redis mode:
+
+- `STEVE_REDIS_PREFIX=steve` (or your configured observer prefix)
+
+Current commands using this switch:
+
+- `php artisan steve:sync-status`
+- `php artisan steve:sync-sessions`
+- `php artisan steve:monitor-transactions`
+
 ## License
 
 The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
