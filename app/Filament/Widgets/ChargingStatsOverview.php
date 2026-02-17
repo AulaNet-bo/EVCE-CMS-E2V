@@ -9,7 +9,7 @@ use Carbon\Carbon;
 
 class ChargingStatsOverview extends BaseWidget
 {
-    protected static ?string $pollingInterval = '10s';
+    protected static ?string $pollingInterval = '3s';
 
     protected function getStats(): array
     {
@@ -19,16 +19,20 @@ class ChargingStatsOverview extends BaseWidget
         // Determine dominant currency
         $currency = ChargingSession::latest()->value('currency') ?? 'USD';
 
+        // Financial KPIs: completed sessions only
         $stats = ChargingSession::where('status', 'Completed')
-            ->where('currency', $currency) // Filter by dominant currency to avoid mixed sums
+            ->where('currency', $currency)
             ->whereBetween('updated_at', [$start, $end])
-            ->selectRaw('SUM(total_cost) as total_sales, SUM(utility_cost) as total_utility, SUM(margin) as total_profit, SUM(total_energy_kwh) as total_energy')
+            ->selectRaw('SUM(total_cost) as total_sales, SUM(utility_cost) as total_utility, SUM(margin) as total_profit')
             ->first();
+
+        // Live energy KPI: include Active + Completed (updated in near real-time)
+        $energy = ChargingSession::whereBetween('updated_at', [$start, $end])
+            ->sum('total_energy_kwh');
 
         $sales = $stats->total_sales ?? 0;
         $utility = $stats->total_utility ?? 0;
         $profit = $stats->total_profit ?? 0;
-        $energy = $stats->total_energy ?? 0;
         
         return [
             Stat::make('Total Revenue (This Month)', number_format($sales, 2) . ' ' . $currency)
