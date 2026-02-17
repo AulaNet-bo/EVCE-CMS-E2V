@@ -13,6 +13,7 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use GuzzleHttp\Cookie\CookieJar;
 use Carbon\Carbon;
 use App\Services\SteveDataSource;
@@ -130,29 +131,51 @@ class MonitorActiveTransactions extends Command
                 }
              }
              
-             // Deduct on Completion (only if funds were sufficient)
+             // Deduct on completion (idempotent, compatible with legacy/new wallet_transactions schemas)
              if ($isCompleted) {
-                 $existingSession = ChargingSession::where('transaction_id', $txId)->first();
-                 $wasActive = $existingSession && $existingSession->status !== 'Completed';
-                 $stopTime = Carbon::parse($stopTimestamp);
-                 $isNewAndRecent = !$existingSession && $stopTime->gt(Carbon::now()->subHour());
+                 $refCol = $this->walletTxRefColumn();
+                 $statusCol = $this->walletTxStatusColumn();
 
-                 if ($wasActive || $isNewAndRecent) {
+                 $alreadyQ = DB::table('wallet_transactions')
+                     ->where('wallet_id', $wallet->id)
+                     ->where('type', 'CHARGE')
+                     ->where($refCol, (string) $txId);
+
+                 if ($statusCol) {
+                     $alreadyQ->where($statusCol, 'COMPLETED');
+                 }
+
+                 $alreadyCharged = $alreadyQ->exists();
+
+                 if (!$alreadyCharged) {
                      if ($wallet->balance >= $cost) {
                          $wallet->balance -= $cost;
                          $wallet->save();
-                         
-                         WalletTransaction::create([
-                             'user_id' => $userId,
+
+                         $insert = [
                              'wallet_id' => $wallet->id,
                              'type' => 'CHARGE',
                              'amount' => -$cost,
-                             'balance_after' => $wallet->balance,
-                             'currency' => $currency,
-                             'status' => 'COMPLETED',
-                             'reference_id' => $txId,
+                             $refCol => (string) $txId,
                              'description' => "EV Charging Session #{$txId} ({$consumedKwh} kWh)",
-                         ]);
+                             'created_at' => now(),
+                             'updated_at' => now(),
+                         ];
+
+                         if (Schema::hasColumn('wallet_transactions', 'user_id')) {
+                             $insert['user_id'] = $userId;
+                         }
+                         if (Schema::hasColumn('wallet_transactions', 'balance_after')) {
+                             $insert['balance_after'] = $wallet->balance;
+                         }
+                         if (Schema::hasColumn('wallet_transactions', 'currency')) {
+                             $insert['currency'] = $currency;
+                         }
+                         if ($statusCol) {
+                             $insert[$statusCol] = 'COMPLETED';
+                         }
+
+                         DB::table('wallet_transactions')->insert($insert);
 
                          $this->info("   💰 Deducted {$cost} {$currency} from Wallet User: {$userId} (New Balance: {$wallet->balance})");
                      } else {
@@ -277,6 +300,16 @@ class MonitorActiveTransactions extends Command
     private function isInBlock($current, $start, $end)
     {
         return $current >= $start && $current <= $end;
+    }
+
+    private function walletTxRefColumn(): string
+    {
+        return Schema::hasColumn('wallet_transactions', 'reference_id') ? 'reference_id' : 'reference';
+    }
+
+    private function walletTxStatusColumn(): ?string
+    {
+        return Schema::hasColumn('wallet_transactions', 'status') ? 'status' : null;
     }
 
     private function remoteStop($chargeBoxId, $txId)
