@@ -32,6 +32,10 @@ class SteveDataSource
 
     public function source(): string
     {
+        if (config('steve.force_redis_reads', true)) {
+            return 'redis';
+        }
+
         return config('steve.data_source', 'redis');
     }
 
