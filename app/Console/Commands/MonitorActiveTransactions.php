@@ -48,6 +48,13 @@ class MonitorActiveTransactions extends Command
         $stopTimestamp = $tx->stop_timestamp ?? null;
         $stopValue = $tx->stop_value ?? null;
         $stopReason = $tx->stop_reason ?? null;
+
+        $existingSession = ChargingSession::where('transaction_id', $txId)->first();
+        if ($existingSession && $existingSession->status === 'Completed') {
+            // Historical integrity: never mutate financials of completed sessions.
+            $this->line("↪️  Tx #{$txId} already completed in CMS, keeping historical values.");
+            return;
+        }
         
         $this->line("👉 Analyzing Tx #{$txId} (Tag: {$tagCode})");
 
