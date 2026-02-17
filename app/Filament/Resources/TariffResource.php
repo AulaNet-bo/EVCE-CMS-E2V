@@ -151,7 +151,8 @@ class TariffResource extends Resource
             ])
             ->actions([
                 Tables\Actions\EditAction::make(),
-                Tables\Actions\DeleteAction::make(),
+                Tables\Actions\DeleteAction::make()
+                    ->visible(fn (Tariff $record) => !$record->hasBeenUsed() && !$record->isExpired()),
             ])
             ->bulkActions([
                 Tables\Actions\DeleteBulkAction::make(),

@@ -5,10 +5,48 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Validation\ValidationException;
 
 class Tariff extends Model
 {
     use HasFactory;
+
+    protected static function booted(): void
+    {
+        static::updating(function (Tariff $tariff) {
+            if ($tariff->isExpired()) {
+                throw ValidationException::withMessages([
+                    'tariff' => 'Expired tariffs cannot be modified.',
+                ]);
+            }
+
+            if ($tariff->hasBeenUsed()) {
+                $dirty = array_keys($tariff->getDirty());
+                $allowed = ['valid_until', 'updated_at'];
+                $blocked = array_values(array_diff($dirty, $allowed));
+
+                if (!empty($blocked)) {
+                    throw ValidationException::withMessages([
+                        'tariff' => 'This tariff already has historical usage. Only "valid until" can be changed.',
+                    ]);
+                }
+            }
+        });
+
+        static::deleting(function (Tariff $tariff) {
+            if ($tariff->isExpired()) {
+                throw ValidationException::withMessages([
+                    'tariff' => 'Expired tariffs cannot be deleted.',
+                ]);
+            }
+
+            if ($tariff->hasBeenUsed()) {
+                throw ValidationException::withMessages([
+                    'tariff' => 'This tariff has historical usage and cannot be deleted.',
+                ]);
+            }
+        });
+    }
 
     protected $casts = [
         'valid_from' => 'datetime',
@@ -36,5 +74,20 @@ class Tariff extends Model
     public function stations(): HasMany
     {
         return $this->hasMany(Station::class);
+    }
+
+    public function chargingSessions(): HasMany
+    {
+        return $this->hasMany(ChargingSession::class, 'tariff_id');
+    }
+
+    public function hasBeenUsed(): bool
+    {
+        return $this->chargingSessions()->exists();
+    }
+
+    public function isExpired(): bool
+    {
+        return $this->valid_until !== null && now()->greaterThan($this->valid_until);
     }
 }

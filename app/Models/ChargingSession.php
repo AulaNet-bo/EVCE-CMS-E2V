@@ -17,6 +17,9 @@ class ChargingSession extends Model
         'user_id',
         'rfid_tag_id',
         'tariff_id',
+        'applied_tariff_id',
+        'applied_tariff_snapshot',
+        'financial_locked_at',
         'start_time',
         'stop_time',
         'meter_start',
@@ -40,6 +43,8 @@ class ChargingSession extends Model
     protected $casts = [
         'start_time' => 'datetime',
         'stop_time' => 'datetime',
+        'applied_tariff_snapshot' => 'array',
+        'financial_locked_at' => 'datetime',
     ];
 
     public function station(): BelongsTo

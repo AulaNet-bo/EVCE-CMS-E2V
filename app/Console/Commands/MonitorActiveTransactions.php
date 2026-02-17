@@ -198,6 +198,26 @@ class MonitorActiveTransactions extends Command
             ->where('connector_id', $connector->connector_id ?? 1)
             ->first();
 
+        $appliedTariffId = $existingSession?->applied_tariff_id ?? $tariff?->id;
+        $appliedTariffSnapshot = $existingSession?->applied_tariff_snapshot;
+        if (!$appliedTariffSnapshot && $tariff) {
+            $appliedTariffSnapshot = [
+                'id' => $tariff->id,
+                'name' => $tariff->name,
+                'currency' => $tariff->currency,
+                'price_session' => (float) ($tariff->price_session ?? 0),
+                'free_minutes' => (int) ($tariff->free_minutes ?? 0),
+                'b1_start' => $tariff->b1_start,
+                'b1_end' => $tariff->b1_end,
+                'b1_price_kwh' => (float) ($tariff->b1_price_kwh ?? 0),
+                'b1_cost_kwh' => (float) ($tariff->b1_cost_kwh ?? 0),
+                'b1_price_min' => (float) ($tariff->b1_price_min ?? 0),
+                'valid_from' => optional($tariff->valid_from)?->toDateTimeString(),
+                'valid_until' => optional($tariff->valid_until)?->toDateTimeString(),
+                'captured_at' => now()->toDateTimeString(),
+            ];
+        }
+
         ChargingSession::updateOrCreate(
             ['transaction_id' => $txId],
             [
@@ -205,6 +225,9 @@ class MonitorActiveTransactions extends Command
                 'connector_id' => $localConnector ? $localConnector->id : 1,
                 'user_id' => $userId,
                 'rfid_tag_id' => $tag?->id,
+                'tariff_id' => $tariff?->id,
+                'applied_tariff_id' => $appliedTariffId,
+                'applied_tariff_snapshot' => $appliedTariffSnapshot,
                 'total_energy_kwh' => $consumedKwh,
                 'total_cost' => $cost,
                 'utility_cost' => $utilityCost,
@@ -218,6 +241,7 @@ class MonitorActiveTransactions extends Command
                 'meter_stop' => $currentWh,
                 'stop_reason' => $creditBlocked ? 'CreditStopped' : $stopReason,
                 'current_soc' => $currentSoC,
+                'financial_locked_at' => $isCompleted ? ($existingSession?->financial_locked_at ?? now()) : ($existingSession?->financial_locked_at),
                 'updated_at' => now(),
             ]
         );
