@@ -38,10 +38,19 @@ class SyncSteveTags extends Command
                 $expiresAt = null;
             }
 
+            $name = $row['note'] ?? null;
+            if (is_string($name)) {
+                // Avoid observer feedback loop: "Synced from CMS - ..."
+                $name = preg_replace('/^(Synced from CMS\s*-\s*)+/i', '', $name) ?: null;
+                if ($name !== null) {
+                    $name = mb_substr($name, 0, 120);
+                }
+            }
+
             RfidTag::updateOrCreate(
                 ['tag_code' => $tagCode],
                 [
-                    'name' => $row['note'] ?? null,
+                    'name' => $name,
                     'is_active' => $isActive,
                     'expires_at' => $expiresAt,
                 ]
