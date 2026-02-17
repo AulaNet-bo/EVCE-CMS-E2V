@@ -71,6 +71,33 @@ Current commands using this switch:
 - `php artisan steve:sync-sessions`
 - `php artisan steve:monitor-transactions`
 
+## Run locally in this server (Docker, no host PHP required)
+
+1. Build PHP image:
+
+```bash
+docker build -t steve-cms-php:8.3 -f Dockerfile.cms .
+```
+
+2. Install dependencies:
+
+```bash
+docker run --rm -u $(id -u):$(id -g) -v $(pwd):/app -w /app steve-cms-php:8.3 composer install --no-interaction
+```
+
+3. Configure `.env` (`DB_DATABASE=stevecms`, `STEVE_DB_DATABASE=stevedb`, `STEVE_DATA_SOURCE=redis`), then:
+
+```bash
+docker run --rm -u $(id -u):$(id -g) --network host -v $(pwd):/app -w /app steve-cms-php:8.3 php artisan key:generate
+docker run --rm -u $(id -u):$(id -g) --network host -v $(pwd):/app -w /app steve-cms-php:8.3 php artisan migrate --force
+```
+
+4. Start app:
+
+```bash
+docker run -d --name steve-cms-app -p 9000:9000 -u $(id -u):$(id -g) -v $(pwd):/app -w /app steve-cms-php:8.3 php artisan serve --host=0.0.0.0 --port=9000
+```
+
 ## License
 
 The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).

@@ -7,6 +7,29 @@ use Illuminate\Support\Facades\Redis;
 
 class SteveDataSource
 {
+    protected function redis()
+    {
+        $conn = Redis::connection('default');
+        $client = $conn->client();
+
+        if ($client instanceof \Redis) {
+            $client->setOption(\Redis::OPT_PREFIX, '');
+        }
+
+        return $conn;
+    }
+
+    protected function normalizeRedisRow(array $row): array
+    {
+        foreach ($row as $k => $v) {
+            if ($v === '') {
+                $row[$k] = null;
+            }
+        }
+
+        return $row;
+    }
+
     public function source(): string
     {
         return config('steve.data_source', 'redis');
@@ -43,11 +66,11 @@ class SteveDataSource
         }
 
         $prefix = $this->redisPrefix();
-        $keys = Redis::smembers("{$prefix}:index:connectors");
+        $keys = $this->redis()->smembers("{$prefix}:index:connectors");
         $rows = [];
 
         foreach ($keys as $key) {
-            $connector = Redis::hgetall($key);
+            $connector = $this->normalizeRedisRow($this->redis()->hgetall($key));
             if (!$connector) {
                 continue;
             }
@@ -56,8 +79,8 @@ class SteveDataSource
             $chargeBoxId = $connector['charge_box_id'] ?? null;
             $connectorId = (int) ($connector['connector_id'] ?? 0);
 
-            $chargeBox = $chargeBoxId ? Redis::hgetall("{$prefix}:charge_box:{$chargeBoxId}") : [];
-            $statusRow = $connectorPk ? Redis::hgetall("{$prefix}:connector_status:{$connectorPk}") : [];
+            $chargeBox = $chargeBoxId ? $this->normalizeRedisRow($this->redis()->hgetall("{$prefix}:charge_box:{$chargeBoxId}")) : [];
+            $statusRow = $connectorPk ? $this->normalizeRedisRow($this->redis()->hgetall("{$prefix}:connector_status:{$connectorPk}")) : [];
 
             $obj = (object) [
                 'charge_box_id' => $chargeBoxId,
@@ -83,8 +106,33 @@ class SteveDataSource
         }
 
         $prefix = $this->redisPrefix();
-        $row = Redis::hgetall("{$prefix}:connector_status:{$connectorPk}");
+        $row = $this->normalizeRedisRow($this->redis()->hgetall("{$prefix}:connector_status:{$connectorPk}"));
         return $row['status'] ?? null;
+    }
+
+    protected function enrichTransaction(array $row): array
+    {
+        $tx = (int) ($row['transaction_pk'] ?? 0);
+        if ($tx <= 0) {
+            return $row;
+        }
+
+        if (!empty($row['stop_timestamp']) && !empty($row['stop_value'])) {
+            return $row;
+        }
+
+        $prefix = $this->redisPrefix();
+        $stop = $this->normalizeRedisRow($this->redis()->hgetall("{$prefix}:transaction_stop:{$tx}"));
+        if (!$stop) {
+            return $row;
+        }
+
+        $row['stop_timestamp'] = $row['stop_timestamp'] ?? ($stop['stop_timestamp'] ?? null);
+        $row['stop_value'] = $row['stop_value'] ?? ($stop['stop_value'] ?? null);
+        $row['stop_reason'] = $row['stop_reason'] ?? ($stop['stop_reason'] ?? null);
+        $row['stop_event_timestamp'] = $row['stop_event_timestamp'] ?? ($stop['event_timestamp'] ?? null);
+
+        return $row;
     }
 
     public function getRecentTransactions(int $limit = 20): array
@@ -98,10 +146,11 @@ class SteveDataSource
         }
 
         $prefix = $this->redisPrefix();
-        $keys = Redis::smembers("{$prefix}:index:transactions");
+        $keys = $this->redis()->smembers("{$prefix}:index:transactions");
         $rows = [];
         foreach ($keys as $key) {
-            $rows[] = (object) Redis::hgetall($key);
+            $raw = $this->normalizeRedisRow($this->redis()->hgetall($key));
+            $rows[] = (object) $this->enrichTransaction($raw);
         }
 
         usort($rows, fn ($a, $b) => ((int) ($b->transaction_pk ?? 0)) <=> ((int) ($a->transaction_pk ?? 0)));
@@ -115,8 +164,8 @@ class SteveDataSource
         }
 
         $prefix = $this->redisPrefix();
-        $row = Redis::hgetall("{$prefix}:transaction:{$transactionPk}");
-        return $row ? (object) $row : null;
+        $row = $this->normalizeRedisRow($this->redis()->hgetall("{$prefix}:transaction:{$transactionPk}"));
+        return $row ? (object) $this->enrichTransaction($row) : null;
     }
 
     public function getConnectorByPk(int $connectorPk): ?object
@@ -126,7 +175,7 @@ class SteveDataSource
         }
 
         $prefix = $this->redisPrefix();
-        $row = Redis::hgetall("{$prefix}:connector:{$connectorPk}");
+        $row = $this->normalizeRedisRow($this->redis()->hgetall("{$prefix}:connector:{$connectorPk}"));
         return $row ? (object) $row : null;
     }
 
@@ -141,11 +190,11 @@ class SteveDataSource
         }
 
         $prefix = $this->redisPrefix();
-        $keys = Redis::smembers("{$prefix}:index:meter_values");
+        $keys = $this->redis()->smembers("{$prefix}:index:meter_values");
         $latest = null;
 
         foreach ($keys as $key) {
-            $row = Redis::hgetall($key);
+            $row = $this->normalizeRedisRow($this->redis()->hgetall($key));
             if (!$row) {
                 continue;
             }
@@ -179,11 +228,11 @@ class SteveDataSource
         }
 
         $prefix = $this->redisPrefix();
-        $keys = Redis::smembers("{$prefix}:index:transactions");
+        $keys = $this->redis()->smembers("{$prefix}:index:transactions");
         $rows = [];
 
         foreach ($keys as $key) {
-            $row = Redis::hgetall($key);
+            $row = $this->normalizeRedisRow($this->redis()->hgetall($key));
             if (!$row) {
                 continue;
             }
@@ -197,7 +246,7 @@ class SteveDataSource
                 continue;
             }
 
-            $rows[] = (object) $row;
+            $rows[] = (object) $this->enrichTransaction($row);
         }
 
         usort($rows, fn ($a, $b) => ((int) ($a->transaction_pk ?? 0)) <=> ((int) ($b->transaction_pk ?? 0)));
