@@ -70,6 +70,7 @@ Current commands using this switch:
 - `php artisan steve:sync-status`
 - `php artisan steve:sync-sessions`
 - `php artisan steve:monitor-transactions`
+- `php artisan steve:sync-tags`
 
 ## Run locally in this server (Docker, no host PHP required)
 

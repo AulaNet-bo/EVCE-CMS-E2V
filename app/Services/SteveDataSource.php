@@ -213,6 +213,32 @@ class SteveDataSource
         return $latest ? (object) $latest : null;
     }
 
+    public function getTagsForSync(int $limit = 500): array
+    {
+        if (!$this->usingRedis()) {
+            return DB::connection('steve')->table('ocpp_tag')
+                ->orderBy('ocpp_tag_pk', 'desc')
+                ->limit($limit)
+                ->get()
+                ->map(fn ($r) => (array) $r)
+                ->all();
+        }
+
+        $prefix = $this->redisPrefix();
+        $keys = $this->redis()->smembers("{$prefix}:index:tags");
+        $rows = [];
+        foreach ($keys as $key) {
+            $row = $this->normalizeRedisRow($this->redis()->hgetall($key));
+            if (!$row) {
+                continue;
+            }
+            $rows[] = $row;
+        }
+
+        usort($rows, fn ($a, $b) => strcmp((string) ($b['id_tag'] ?? ''), (string) ($a['id_tag'] ?? '')));
+        return array_slice($rows, 0, $limit);
+    }
+
     public function getSessionsForSync(?string $since = null, ?int $afterTransactionPk = null, int $limit = 200): array
     {
         if (!$this->usingRedis()) {
