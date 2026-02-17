@@ -87,7 +87,7 @@ class MonitorActiveTransactions extends Command
         $chargeBoxId = $connector->charge_box_id ?? 'Unknown';
         
         $station = Station::where('charge_box_id', $chargeBoxId)->first();
-        $tariff = $station ? $station->tariff : Tariff::first(); // Fallback
+        $tariff = $this->resolveApplicableTariff($station, $startTimestamp);
         
         $cost = 0;
         $utilityCost = 0;
@@ -193,6 +193,32 @@ class MonitorActiveTransactions extends Command
         );
         
         $this->line("   ✅ Synced Tx #{$txId}: " . ($isCompleted ? "Completed" : "Active") . " | {$consumedKwh} kWh | \${$cost}");
+    }
+
+    private function resolveApplicableTariff(?Station $station, ?string $startTimestamp): ?Tariff
+    {
+        $ts = $startTimestamp ? Carbon::parse($startTimestamp) : Carbon::now();
+
+        $inWindow = function ($q) use ($ts) {
+            $q->where(function ($qq) use ($ts) {
+                $qq->whereNull('valid_from')->orWhere('valid_from', '<=', $ts);
+            })->where(function ($qq) use ($ts) {
+                $qq->whereNull('valid_until')->orWhere('valid_until', '>=', $ts);
+            });
+        };
+
+        if ($station && $station->tariff_id) {
+            $tariff = Tariff::where('id', $station->tariff_id)
+                ->where($inWindow)
+                ->first();
+            if ($tariff) {
+                return $tariff;
+            }
+        }
+
+        return Tariff::where($inWindow)
+            ->orderByDesc('valid_from')
+            ->first() ?? Tariff::first();
     }
 
     private function calculateCost($kwh, $startTimeStr, $tariff, $stopTimeStr = null)

@@ -45,6 +45,17 @@ class TariffResource extends Resource
                                     ->numeric()
                                     ->default(0)
                                     ->suffix('min'),
+
+                                Forms\Components\DateTimePicker::make('valid_from')
+                                    ->label('Tariff valid from')
+                                    ->seconds(false)
+                                    ->helperText('Optional. If empty, tariff is valid from the beginning.'),
+
+                                Forms\Components\DateTimePicker::make('valid_until')
+                                    ->label('Tariff valid until')
+                                    ->seconds(false)
+                                    ->after('valid_from')
+                                    ->helperText('Optional. If empty, tariff has no end date.'),
                             ])->columns(2),
                     ])->columnSpan(1),
 
@@ -131,6 +142,8 @@ class TariffResource extends Resource
                 Tables\Columns\TextColumn::make('name')->searchable()->sortable(),
                 Tables\Columns\TextColumn::make('currency')->sortable(),
                 Tables\Columns\TextColumn::make('b1_price_kwh')->label('Base $/kWh')->money(),
+                Tables\Columns\TextColumn::make('valid_from')->dateTime()->label('Valid from')->sortable(),
+                Tables\Columns\TextColumn::make('valid_until')->dateTime()->label('Valid until')->sortable(),
                 Tables\Columns\TextColumn::make('created_at')->dateTime()->sortable(),
             ])
             ->filters([

@@ -10,12 +10,19 @@ class Tariff extends Model
 {
     use HasFactory;
 
+    protected $casts = [
+        'valid_from' => 'datetime',
+        'valid_until' => 'datetime',
+    ];
+
     protected $fillable = [
         'name',
         'currency',
         'cost_price_kwh', // Base Utility Cost (Deprecated in favor of blocks, but kept for legacy)
         'price_session',
         'free_minutes',
+        'valid_from',
+        'valid_until',
         // Block 1
         'b1_start', 'b1_end', 'b1_price_kwh', 'b1_cost_kwh', 'b1_price_min',
         // Block 2
