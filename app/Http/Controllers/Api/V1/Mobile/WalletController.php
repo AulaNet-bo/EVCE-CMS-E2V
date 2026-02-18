@@ -130,4 +130,34 @@ class WalletController extends Controller
             'qr_image' => $result['qr_image'] ?? null,
         ]);
     }
+
+    public function libelulaStatus(Request $request, int $transactionId)
+    {
+        $wallet = Wallet::firstOrCreate(
+            ['user_id' => $request->user()->id],
+            ['balance' => 0, 'currency' => 'BOB', 'is_postpaid' => false, 'credit_limit' => 0]
+        );
+
+        $tx = DB::table('wallet_transactions')
+            ->where('id', $transactionId)
+            ->where('wallet_id', $wallet->id)
+            ->first();
+
+        if (!$tx) {
+            return response()->json([
+                'message' => 'Transacción no encontrada',
+            ], 404);
+        }
+
+        $statusCol = Schema::hasColumn('wallet_transactions', 'status') ? 'status' : null;
+        $status = $statusCol ? (string)($tx->{$statusCol} ?? 'PENDING') : 'PENDING';
+
+        return response()->json([
+            'transaction_id' => (int) $tx->id,
+            'status' => strtoupper($status),
+            'amount' => (float) ($tx->amount ?? 0),
+            'wallet_balance' => (float) ($wallet->fresh()->balance ?? 0),
+            'currency' => $wallet->currency ?? 'BOB',
+        ]);
+    }
 }
