@@ -106,6 +106,7 @@ class WalletController extends Controller
             'razon_social' => 'nullable|string|max:255',
             'documento' => 'nullable|string|max:50',
             'complemento' => 'nullable|string|max:50',
+            'doc_type' => 'nullable|in:CI,NIT',
         ], [
             'amount.min' => 'El monto mínimo para recarga con Libélula es Bs 1.00',
         ]);
@@ -114,6 +115,7 @@ class WalletController extends Controller
 
         if ($request->filled('documento') || $request->filled('complemento') || $request->filled('razon_social')) {
             $user->billing_document = $request->input('documento') ?: $user->billing_document;
+            $user->billing_doc_type = $request->input('doc_type') ?: $user->billing_doc_type;
             $user->billing_complement = $request->input('complemento');
             $user->billing_razon_social = $request->input('razon_social') ?: $user->billing_razon_social;
             $user->save();
@@ -132,6 +134,7 @@ class WalletController extends Controller
                 'razon_social' => $request->input('razon_social') ?: $user->billing_razon_social,
                 'documento' => $request->input('documento') ?: $user->billing_document,
                 'complemento' => $request->input('complemento') ?: $user->billing_complement,
+                'doc_type' => $request->input('doc_type') ?: $user->billing_doc_type,
             ]
         );
 
