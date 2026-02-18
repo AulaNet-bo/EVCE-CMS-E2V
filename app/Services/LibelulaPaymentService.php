@@ -72,6 +72,8 @@ class LibelulaPaymentService
 
         DB::table('wallet_transactions')->where('id', $txId)->update([$refCol => $localReference]);
 
+        $canInvoice = !empty($invoiceData['documento']) && !empty($invoiceData['razon_social']);
+
         $payload = [
             'appkey' => $this->apiKey,
             'email_cliente' => $user->email,
@@ -91,7 +93,8 @@ class LibelulaPaymentService
                     'detalle' => $description,
                 ],
             ],
-            'emite_factura' => false,
+            // Emit invoice when billing fields are present.
+            'emite_factura' => $canInvoice,
         ];
 
         if (!empty($invoiceData['documento'])) {
