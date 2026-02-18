@@ -68,7 +68,7 @@ class LibelulaPaymentService
             return DB::table('wallet_transactions')->insertGetId($insert);
         });
 
-        $localReference = (string) $txId;
+        $localReference = 'LBE-' . $txId . '-' . now()->format('YmdHis');
 
         DB::table('wallet_transactions')->where('id', $txId)->update([$refCol => $localReference]);
 
@@ -111,9 +111,11 @@ class LibelulaPaymentService
 
             $update = [
                 'updated_at' => now(),
-                'metadata' => json_encode(['register_response' => $data]),
             ];
 
+            if (Schema::hasColumn('wallet_transactions', 'metadata')) {
+                $update['metadata'] = json_encode(['register_response' => $data]);
+            }
             if (Schema::hasColumn('wallet_transactions', 'external_payment_id')) {
                 $update['external_payment_id'] = $data['id_transaccion'] ?? null;
             }
