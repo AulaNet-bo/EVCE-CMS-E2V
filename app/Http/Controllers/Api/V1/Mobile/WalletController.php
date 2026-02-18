@@ -108,8 +108,17 @@ class WalletController extends Controller
             'complemento' => 'nullable|string|max:50',
         ]);
 
+        $user = $request->user();
+
+        if ($request->filled('documento') || $request->filled('complemento') || $request->filled('razon_social')) {
+            $user->billing_document = $request->input('documento') ?: $user->billing_document;
+            $user->billing_complement = $request->input('complemento');
+            $user->billing_razon_social = $request->input('razon_social') ?: $user->billing_razon_social;
+            $user->save();
+        }
+
         $wallet = Wallet::firstOrCreate(
-            ['user_id' => $request->user()->id],
+            ['user_id' => $user->id],
             ['balance' => 0, 'currency' => 'BOB', 'is_postpaid' => false, 'credit_limit' => 0]
         );
 
@@ -118,9 +127,9 @@ class WalletController extends Controller
             round((float)$request->input('amount'), 2),
             $request->input('description', 'Recarga Wallet desde app móvil'),
             [
-                'razon_social' => $request->input('razon_social'),
-                'documento' => $request->input('documento'),
-                'complemento' => $request->input('complemento'),
+                'razon_social' => $request->input('razon_social') ?: $user->billing_razon_social,
+                'documento' => $request->input('documento') ?: $user->billing_document,
+                'complemento' => $request->input('complemento') ?: $user->billing_complement,
             ]
         );
 

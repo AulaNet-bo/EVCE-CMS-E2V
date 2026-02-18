@@ -22,6 +22,9 @@ class User extends Authenticatable
         'name',
         'email',
         'password',
+        'billing_document',
+        'billing_complement',
+        'billing_razon_social',
     ];
 
     /**

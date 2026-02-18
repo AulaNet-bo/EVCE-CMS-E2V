@@ -227,6 +227,18 @@ class LibelulaPaymentService
             if (Schema::hasColumn('wallet_transactions', 'external_payment_id')) {
                 $update['external_payment_id'] = $payload['id_transaccion'] ?? ($payload['transaction_id'] ?? null);
             }
+            if (Schema::hasColumn('wallet_transactions', 'invoice_number')) {
+                $update['invoice_number'] = $payload['invoice_number']
+                    ?? $payload['nro_factura']
+                    ?? $payload['numero_factura']
+                    ?? null;
+            }
+            if (Schema::hasColumn('wallet_transactions', 'invoice_url')) {
+                $update['invoice_url'] = $payload['invoice_url']
+                    ?? $payload['factura_url']
+                    ?? $payload['url_factura']
+                    ?? null;
+            }
             if (Schema::hasColumn('wallet_transactions', 'metadata')) {
                 $update['metadata'] = json_encode(['webhook' => $payload]);
             }
