@@ -113,10 +113,13 @@ class WalletController extends Controller
 
         $user = $request->user();
 
-        if ($request->filled('documento') || $request->filled('complemento') || $request->filled('razon_social')) {
+        $docType = $request->input('doc_type') ?: $user->billing_doc_type;
+        $complemento = ($docType === 'NIT') ? '' : ($request->input('complemento') ?? $user->billing_complement);
+
+        if ($request->filled('documento') || $request->filled('complemento') || $request->filled('razon_social') || $request->filled('doc_type')) {
             $user->billing_document = $request->input('documento') ?: $user->billing_document;
-            $user->billing_doc_type = $request->input('doc_type') ?: $user->billing_doc_type;
-            $user->billing_complement = $request->input('complemento');
+            $user->billing_doc_type = $docType;
+            $user->billing_complement = $complemento;
             $user->billing_razon_social = $request->input('razon_social') ?: $user->billing_razon_social;
             $user->save();
         }
@@ -133,8 +136,8 @@ class WalletController extends Controller
             [
                 'razon_social' => $request->input('razon_social') ?: $user->billing_razon_social,
                 'documento' => $request->input('documento') ?: $user->billing_document,
-                'complemento' => $request->input('complemento') ?: $user->billing_complement,
-                'doc_type' => $request->input('doc_type') ?: $user->billing_doc_type,
+                'complemento' => $complemento,
+                'doc_type' => $docType,
             ]
         );
 
