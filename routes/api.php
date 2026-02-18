@@ -38,6 +38,7 @@ Route::prefix('v1/mobile')->group(function () {
         Route::get('/wallet', [WalletController::class, 'balance']);
         Route::get('/wallet/transactions', [WalletController::class, 'history']);
         Route::post('/wallet/topup', [WalletController::class, 'topup']);
+        Route::post('/wallet/libelula/checkout', [WalletController::class, 'libelulaCheckout']);
         
         // Sessions
         Route::get('/sessions', [ChargingSessionController::class, 'index']);
