@@ -40,6 +40,7 @@ Route::prefix('v1/mobile')->group(function () {
         Route::post('/wallet/topup', [WalletController::class, 'topup']);
         Route::post('/wallet/libelula/checkout', [WalletController::class, 'libelulaCheckout']);
         Route::get('/wallet/libelula/status/{transactionId}', [WalletController::class, 'libelulaStatus']);
+        Route::delete('/wallet/libelula/pending/{transactionId}', [WalletController::class, 'deletePending']);
         
         // Sessions
         Route::get('/sessions', [ChargingSessionController::class, 'index']);
