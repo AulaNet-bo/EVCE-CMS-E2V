@@ -103,6 +103,9 @@ class WalletController extends Controller
         $request->validate([
             'amount' => 'required|numeric|min:1|max:10000',
             'description' => 'nullable|string|max:255',
+            'razon_social' => 'nullable|string|max:255',
+            'documento' => 'nullable|string|max:50',
+            'complemento' => 'nullable|string|max:50',
         ]);
 
         $wallet = Wallet::firstOrCreate(
@@ -113,7 +116,12 @@ class WalletController extends Controller
         $result = $libelula->createPayment(
             $wallet,
             round((float)$request->input('amount'), 2),
-            $request->input('description', 'Recarga Wallet desde app móvil')
+            $request->input('description', 'Recarga Wallet desde app móvil'),
+            [
+                'razon_social' => $request->input('razon_social'),
+                'documento' => $request->input('documento'),
+                'complemento' => $request->input('complemento'),
+            ]
         );
 
         if (!($result['success'] ?? false)) {

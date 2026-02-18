@@ -24,7 +24,7 @@ class LibelulaPaymentService
         return trim($this->apiKey) !== '';
     }
 
-    public function createPayment(Wallet $wallet, float $amount, string $description = 'Recarga Wallet'): array
+    public function createPayment(Wallet $wallet, float $amount, string $description = 'Recarga Wallet', array $invoiceData = []): array
     {
         if (!$this->isConfigured()) {
             return [
@@ -41,7 +41,7 @@ class LibelulaPaymentService
         $currencyCol = Schema::hasColumn('wallet_transactions', 'currency');
         $balanceAfterCol = Schema::hasColumn('wallet_transactions', 'balance_after');
 
-        $txId = DB::transaction(function () use ($wallet, $user, $amount, $description, $refCol, $statusCol, $currencyCol, $balanceAfterCol) {
+        $txId = DB::transaction(function () use ($wallet, $user, $amount, $description, $refCol, $statusCol, $currencyCol, $balanceAfterCol, $invoiceData) {
             $insert = [
                 'wallet_id' => $wallet->id,
                 'type' => 'RECHARGE',
@@ -79,7 +79,7 @@ class LibelulaPaymentService
             'callback_url' => route('api.webhooks.libelula'),
             'url_retorno' => url('/admin/wallets'),
             'descripcion' => $description,
-            'nombre_cliente' => $user->name,
+            'nombre_cliente' => $invoiceData['razon_social'] ?: $user->name,
             'moneda' => $wallet->currency ?? 'BOB',
             'monto' => $amount,
             'lineas_detalle_deuda' => [
@@ -93,6 +93,13 @@ class LibelulaPaymentService
             ],
             'emite_factura' => false,
         ];
+
+        if (!empty($invoiceData['documento'])) {
+            $payload['documento'] = $invoiceData['documento'];
+        }
+        if (!empty($invoiceData['complemento'])) {
+            $payload['complemento'] = $invoiceData['complemento'];
+        }
 
         try {
             $resp = Http::timeout(20)->post("{$this->baseUrl}/deuda/registrar", $payload);
