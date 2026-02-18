@@ -106,6 +106,8 @@ class WalletController extends Controller
             'razon_social' => 'nullable|string|max:255',
             'documento' => 'nullable|string|max:50',
             'complemento' => 'nullable|string|max:50',
+        ], [
+            'amount.min' => 'El monto mínimo para recarga con Libélula es Bs 1.00',
         ]);
 
         $user = $request->user();
