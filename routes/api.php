@@ -37,6 +37,7 @@ Route::prefix('v1/mobile')->group(function () {
         // Wallet
         Route::get('/wallet', [WalletController::class, 'balance']);
         Route::get('/wallet/transactions', [WalletController::class, 'history']);
+        Route::post('/wallet/topup', [WalletController::class, 'topup']);
         
         // Sessions
         Route::get('/sessions', [ChargingSessionController::class, 'index']);
