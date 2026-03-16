@@ -88,6 +88,13 @@ class WalletController extends Controller
             DB::table('wallet_transactions')->insert($insert);
         });
 
+        // Notify the user
+        $user->notify(new \App\Notifications\GeneralNotification(
+            'Recarga exitosa',
+            "Se ha realizado una recarga de Bs " . number_format($amount, 2) . " en tu billetera.",
+            ['type' => 'RECHARGE', 'amount' => $amount]
+        ));
+
         return response()->json([
             'message' => 'Top-up aplicado correctamente',
             'wallet' => [
@@ -131,13 +138,14 @@ class WalletController extends Controller
 
         $result = $libelula->createPayment(
             $wallet,
-            round((float)$request->input('amount'), 2),
+            round((float) $request->input('amount'), 2),
             $request->input('description', 'Recarga Wallet desde app móvil'),
             [
                 'razon_social' => $request->input('razon_social') ?: $user->billing_razon_social,
                 'documento' => $request->input('documento') ?: $user->billing_document,
                 'complemento' => $complemento,
                 'doc_type' => $docType,
+                'return_url' => url('/payment-return-app?tx_id=' . ($result['transaction_id'] ?? '')),
             ]
         );
 
@@ -175,7 +183,7 @@ class WalletController extends Controller
         }
 
         $statusCol = Schema::hasColumn('wallet_transactions', 'status') ? 'status' : null;
-        $status = $statusCol ? (string)($tx->{$statusCol} ?? 'PENDING') : 'PENDING';
+        $status = $statusCol ? (string) ($tx->{$statusCol} ?? 'PENDING') : 'PENDING';
 
         return response()->json([
             'transaction_id' => (int) $tx->id,
@@ -202,7 +210,7 @@ class WalletController extends Controller
             return response()->json(['message' => 'Transacción no encontrada'], 404);
         }
 
-        $status = strtoupper((string)($tx->status ?? 'PENDING'));
+        $status = strtoupper((string) ($tx->status ?? 'PENDING'));
         if (!in_array($status, ['PENDING', 'PROCESSING', '-'], true)) {
             return response()->json(['message' => 'Solo se pueden eliminar pendientes'], 422);
         }

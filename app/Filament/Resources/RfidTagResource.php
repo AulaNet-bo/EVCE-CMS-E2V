@@ -3,6 +3,7 @@
 namespace App\Filament\Resources;
 
 use App\Filament\Resources\RfidTagResource\Pages;
+use App\Filament\Resources\RfidTagResource\Pages\BulkRfidManager;
 use App\Filament\Resources\RfidTagResource\RelationManagers;
 use App\Models\RfidTag;
 use Filament\Forms;
@@ -17,7 +18,21 @@ class RfidTagResource extends Resource
 {
     protected static ?string $model = RfidTag::class;
 
-    protected static ?string $navigationIcon = 'heroicon-o-rectangle-stack';
+    protected static ?string $navigationIcon = 'heroicon-o-identification';
+
+    protected static ?string $navigationGroup = 'Operaciones';
+
+    public static function getEloquentQuery(): Builder
+    {
+        $query = parent::getEloquentQuery();
+        $user = auth()->user();
+
+        if ($user && $user->hasRole('enterprise_admin')) {
+            return $query->where('company_id', $user->company_id);
+        }
+
+        return $query;
+    }
 
     public static function form(Form $form): Form
     {
@@ -93,6 +108,7 @@ class RfidTagResource extends Resource
     {
         return [
             'index' => Pages\ListRfidTags::route('/'),
+            'bulk' => BulkRfidManager::route('/bulk'),
             'create' => Pages\CreateRfidTag::route('/create'),
             'edit' => Pages\EditRfidTag::route('/{record}/edit'),
         ];

@@ -3,6 +3,7 @@
 namespace App\Filament\Resources;
 
 use App\Filament\Resources\StationResource\Pages;
+use App\Filament\Resources\StationResource\RelationManagers;
 use App\Models\Station;
 use Filament\Forms;
 use Filament\Forms\Form;
@@ -16,6 +17,21 @@ class StationResource extends Resource
     protected static ?string $navigationIcon = 'heroicon-o-bolt';
     protected static ?string $navigationGroup = 'Infrastructure';
 
+    public static function canCreate(): bool
+    {
+        return false;
+    }
+
+    public static function canEdit(\Illuminate\Database\Eloquent\Model $record): bool
+    {
+        return true;
+    }
+
+    public static function canDelete(\Illuminate\Database\Eloquent\Model $record): bool
+    {
+        return true;
+    }
+
     public static function form(Form $form): Form
     {
         return $form
@@ -27,8 +43,9 @@ class StationResource extends Resource
                             ->label('Charge Box ID')
                             ->required()
                             ->unique(ignoreRecord: true)
-                            ->helperText('Must match the ChargePointIdentity in the physical charger.'),
-                        
+                            ->disabled()
+                            ->helperText('Identity pulled from Steve Server.'),
+
                         Forms\Components\Select::make('location_id')
                             ->relationship('location', 'name')
                             ->required()
@@ -39,19 +56,21 @@ class StationResource extends Resource
 
                         Forms\Components\Select::make('tariff_id')
                             ->relationship('tariff', 'name')
-                            ->required(),
+                            ->disabled()
+                            ->helperText('Assigned automatically based on time and month.'),
                     ])->columns(2),
 
                 Forms\Components\Section::make('Hardware Details')
                     ->schema([
-                        Forms\Components\TextInput::make('name')->required(),
-                        Forms\Components\TextInput::make('vendor'),
-                        Forms\Components\TextInput::make('model'),
-                        Forms\Components\TextInput::make('serial_number'),
+                        Forms\Components\TextInput::make('name')->required()->disabled(),
+                        Forms\Components\TextInput::make('vendor')->disabled(),
+                        Forms\Components\TextInput::make('model')->disabled(),
+                        Forms\Components\TextInput::make('serial_number')->disabled(),
                     ])->columns(2),
 
                 Forms\Components\Toggle::make('is_active')
                     ->label('Enabled')
+                    ->disabled()
                     ->default(true),
             ]);
     }
@@ -78,7 +97,7 @@ class StationResource extends Resource
     public static function getRelations(): array
     {
         return [
-            // Connectors Relation Manager will go here
+            RelationManagers\ConnectorsRelationManager::class,
         ];
     }
 

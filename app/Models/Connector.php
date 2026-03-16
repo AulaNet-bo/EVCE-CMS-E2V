@@ -23,4 +23,20 @@ class Connector extends Model
     {
         return $this->belongsTo(Station::class);
     }
+
+    /**
+     * Get human readable connector type.
+     */
+    public function getTypeNameAttribute(): string
+    {
+        $types = [
+            'CCS2' => 'CCS Type 2',
+            'GBT' => 'GB/T (DC)',
+            'CHAdeMO' => 'CHAdeMO',
+            'Type2' => 'Type 2 (AC)',
+            'Type1' => 'Type 1 (J1772)',
+        ];
+
+        return $types[$this->type] ?? $this->type ?? 'Unknown';
+    }
 }

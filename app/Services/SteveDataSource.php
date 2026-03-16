@@ -7,6 +7,8 @@ use Illuminate\Support\Facades\Redis;
 
 class SteveDataSource
 {
+    protected static $localCache = [];
+
     protected function redis()
     {
         $conn = Redis::connection('default');
@@ -52,7 +54,7 @@ class SteveDataSource
     public function getConnectorsWithStatus(): array
     {
         if (!$this->usingRedis()) {
-            return DB::connection('steve')
+            $baseItems = DB::connection('steve')
                 ->table('connector')
                 ->join('charge_box', 'connector.charge_box_id', '=', 'charge_box.charge_box_id')
                 ->select(
@@ -62,56 +64,149 @@ class SteveDataSource
                     'connector.connector_pk'
                 )
                 ->get()
-                ->map(function ($row) {
-                    $row->status = $this->getLatestConnectorStatus((int) $row->connector_pk) ?? 'Unknown';
-                    return $row;
-                })
                 ->all();
+
+            $pks = array_map(fn($row) => (int) $row->connector_pk, $baseItems);
+            $statuses = $this->getMultipleConnectorStatuses($pks);
+
+            foreach ($baseItems as $row) {
+                $row->status = $statuses[$row->connector_pk] ?? 'Unknown';
+            }
+
+            return $baseItems;
         }
 
         $prefix = $this->redisPrefix();
         $keys = $this->redis()->smembers("{$prefix}:index:connectors");
-        $rows = [];
+        $connectors = [];
 
-        foreach ($keys as $key) {
-            $connector = $this->normalizeRedisRow($this->redis()->hgetall($key));
-            if (!$connector) {
-                continue;
+        // Fetch all connector hashes in one batch
+        $rawConnectors = $this->redis()->pipeline(function ($pipe) use ($keys) {
+            foreach ($keys as $key) {
+                $pipe->hgetall($key);
             }
+        });
 
-            $connectorPk = (int) ($connector['connector_pk'] ?? 0);
-            $chargeBoxId = $connector['charge_box_id'] ?? null;
-            $connectorId = (int) ($connector['connector_id'] ?? 0);
+        $rows = [];
+        $connectorPks = [];
+        $chargeBoxIds = [];
 
-            $chargeBox = $chargeBoxId ? $this->normalizeRedisRow($this->redis()->hgetall("{$prefix}:charge_box:{$chargeBoxId}")) : [];
-            $statusRow = $connectorPk ? $this->normalizeRedisRow($this->redis()->hgetall("{$prefix}:connector_status:{$connectorPk}")) : [];
+        foreach ($rawConnectors as $raw) {
+            $connector = $this->normalizeRedisRow($raw ?? []);
+            if (!$connector)
+                continue;
 
-            $obj = (object) [
-                'charge_box_id' => $chargeBoxId,
-                'connector_id' => $connectorId,
-                'last_heartbeat_timestamp' => $chargeBox['last_heartbeat_timestamp'] ?? null,
-                'connector_pk' => $connectorPk,
-                'status' => $statusRow['status'] ?? 'Unknown',
-            ];
-            $rows[] = $obj;
+            $rows[] = $connector;
+            $connectorPks[] = (int) ($connector['connector_pk'] ?? 0);
+            if ($cbid = $connector['charge_box_id'] ?? null) {
+                $chargeBoxIds[$cbid] = true;
+            }
         }
 
-        return $rows;
+        // Fetch all charge boxes and statuses in batches
+        $chargeBoxIds = array_keys($chargeBoxIds);
+        $rawChargeBoxes = $this->redis()->pipeline(function ($pipe) use ($prefix, $chargeBoxIds) {
+            foreach ($chargeBoxIds as $cbid) {
+                $pipe->hgetall("{$prefix}:charge_box:{$cbid}");
+            }
+        });
+        $chargeBoxes = [];
+        foreach ($chargeBoxIds as $idx => $cbid) {
+            $chargeBoxes[$cbid] = $this->normalizeRedisRow($rawChargeBoxes[$idx] ?? []);
+        }
+
+        $statuses = $this->getMultipleConnectorStatuses($connectorPks);
+
+        $final = [];
+        foreach ($rows as $connector) {
+            $cbid = $connector['charge_box_id'] ?? null;
+            $connectorPk = (int) ($connector['connector_pk'] ?? 0);
+            $chargeBox = $chargeBoxes[$cbid] ?? [];
+
+            $final[] = (object) [
+                'charge_box_id' => $cbid,
+                'connector_id' => (int) ($connector['connector_id'] ?? 0),
+                'last_heartbeat_timestamp' => $chargeBox['last_heartbeat_timestamp'] ?? null,
+                'connector_pk' => $connectorPk,
+                'status' => $statuses[$connectorPk] ?? 'Unknown',
+            ];
+        }
+
+        return $final;
+    }
+
+    public function getMultipleConnectorStatuses(array $connectorPks): array
+    {
+        $results = [];
+        $toFetch = [];
+
+        foreach ($connectorPks as $pk) {
+            $cacheKey = "status:{$pk}";
+            if (isset(static::$localCache[$cacheKey])) {
+                $results[$pk] = static::$localCache[$cacheKey];
+            } else {
+                $toFetch[] = $pk;
+            }
+        }
+
+        if (empty($toFetch)) {
+            return $results;
+        }
+
+        if (!$this->usingRedis()) {
+            $rows = DB::connection('steve')->table('connector_status')
+                ->whereIn('connector_pk', $toFetch)
+                ->whereRaw('status_timestamp = (SELECT MAX(status_timestamp) FROM connector_status as cs2 WHERE cs2.connector_pk = connector_status.connector_pk)')
+                ->get();
+
+            foreach ($rows as $row) {
+                $status = $row->status ?? 'Unknown';
+                $results[$row->connector_pk] = $status;
+                static::$localCache["status:{$row->connector_pk}"] = $status;
+            }
+        } else {
+            $prefix = $this->redisPrefix();
+            $redis = $this->redis();
+
+            // Use pipeline for O(1) round-trip
+            $responses = $redis->pipeline(function ($pipe) use ($prefix, $toFetch) {
+                foreach ($toFetch as $pk) {
+                    $pipe->hgetall("{$prefix}:connector_status:{$pk}");
+                }
+            });
+
+            foreach ($toFetch as $idx => $pk) {
+                $row = $this->normalizeRedisRow($responses[$idx] ?? []);
+                $status = $row['status'] ?? 'Available';
+                $results[$pk] = $status;
+                static::$localCache["status:{$pk}"] = $status;
+            }
+        }
+
+        return $results;
     }
 
     public function getLatestConnectorStatus(int $connectorPk): ?string
     {
+        $cacheKey = "status:{$connectorPk}";
+        if (isset(static::$localCache[$cacheKey])) {
+            return static::$localCache[$cacheKey];
+        }
+
         if (!$this->usingRedis()) {
             $row = DB::connection('steve')->table('connector_status')
                 ->where('connector_pk', $connectorPk)
                 ->orderBy('status_timestamp', 'desc')
                 ->first();
-            return $row->status ?? null;
+            $status = $row->status ?? null;
+        } else {
+            $prefix = $this->redisPrefix();
+            $row = $this->normalizeRedisRow($this->redis()->hgetall("{$prefix}:connector_status:{$connectorPk}"));
+            $status = $row['status'] ?? null;
         }
 
-        $prefix = $this->redisPrefix();
-        $row = $this->normalizeRedisRow($this->redis()->hgetall("{$prefix}:connector_status:{$connectorPk}"));
-        return $row['status'] ?? null;
+        static::$localCache[$cacheKey] = $status;
+        return $status;
     }
 
     protected function enrichTransaction(array $row): array
@@ -151,16 +246,23 @@ class SteveDataSource
 
         $prefix = $this->redisPrefix();
         $keys = $this->redis()->smembers("{$prefix}:index:transactions");
+
+        $rawRows = $this->redis()->pipeline(function ($pipe) use ($keys) {
+            foreach ($keys as $key) {
+                $pipe->hgetall($key);
+            }
+        });
+
         $rows = [];
-        foreach ($keys as $key) {
-            $raw = $this->normalizeRedisRow($this->redis()->hgetall($key));
-            if (!$raw) {
+        foreach ($rawRows as $raw) {
+            $data = $this->normalizeRedisRow($raw ?? []);
+            if (!$data) {
                 continue;
             }
-            $rows[] = (object) $this->enrichTransaction($raw);
+            $rows[] = (object) $this->enrichTransaction($data);
         }
 
-        usort($rows, fn ($a, $b) => ((int) ($b->transaction_pk ?? 0)) <=> ((int) ($a->transaction_pk ?? 0)));
+        usort($rows, fn($a, $b) => ((int) ($b->transaction_pk ?? 0)) <=> ((int) ($a->transaction_pk ?? 0)));
         return array_slice($rows, 0, $limit);
     }
 
@@ -179,10 +281,10 @@ class SteveDataSource
                 }
             }
 
-            usort($completed, fn ($a, $b) => ((int) ($b->transaction_pk ?? 0)) <=> ((int) ($a->transaction_pk ?? 0)));
+            usort($completed, fn($a, $b) => ((int) ($b->transaction_pk ?? 0)) <=> ((int) ($a->transaction_pk ?? 0)));
             $completed = array_slice($completed, 0, $recentLimit);
             $merged = array_merge($active, $completed);
-            usort($merged, fn ($a, $b) => ((int) ($b->transaction_pk ?? 0)) <=> ((int) ($a->transaction_pk ?? 0)));
+            usort($merged, fn($a, $b) => ((int) ($b->transaction_pk ?? 0)) <=> ((int) ($a->transaction_pk ?? 0)));
             return $merged;
         }
 
@@ -192,22 +294,28 @@ class SteveDataSource
         $startKeys = $this->redis()->smembers("{$prefix}:index:transaction_start");
         $stopKeys = $this->redis()->smembers("{$prefix}:index:transaction_stop");
 
+        $allRaw = $this->redis()->pipeline(function ($pipe) use ($startKeys, $stopKeys) {
+            foreach ($startKeys as $k)
+                $pipe->hgetall($k);
+            foreach ($stopKeys as $k)
+                $pipe->hgetall($k);
+        });
+
+        $startCount = count($startKeys);
         $started = [];
-        foreach ($startKeys as $k) {
-            $row = $this->normalizeRedisRow($this->redis()->hgetall($k));
+        for ($i = 0; $i < $startCount; $i++) {
+            $row = $this->normalizeRedisRow($allRaw[$i] ?? []);
             $tx = (int) ($row['transaction_pk'] ?? 0);
-            if ($tx > 0) {
-                $started[$tx] = true;
-            }
+            if ($tx > 0)
+                $started[$tx] = $row;
         }
 
         $stopped = [];
-        foreach ($stopKeys as $k) {
-            $row = $this->normalizeRedisRow($this->redis()->hgetall($k));
+        for ($i = $startCount; $i < count($allRaw); $i++) {
+            $row = $this->normalizeRedisRow($allRaw[$i] ?? []);
             $tx = (int) ($row['transaction_pk'] ?? 0);
-            if ($tx > 0) {
+            if ($tx > 0)
                 $stopped[$tx] = true;
-            }
         }
 
         $activeIds = [];
@@ -247,11 +355,11 @@ class SteveDataSource
                 $completed[] = $tx;
             }
         }
-        usort($completed, fn ($a, $b) => ((int) ($b->transaction_pk ?? 0)) <=> ((int) ($a->transaction_pk ?? 0)));
+        usort($completed, fn($a, $b) => ((int) ($b->transaction_pk ?? 0)) <=> ((int) ($a->transaction_pk ?? 0)));
         $completed = array_slice($completed, 0, $recentLimit);
 
         $merged = array_merge($rows, $completed);
-        usort($merged, fn ($a, $b) => ((int) ($b->transaction_pk ?? 0)) <=> ((int) ($a->transaction_pk ?? 0)));
+        usort($merged, fn($a, $b) => ((int) ($b->transaction_pk ?? 0)) <=> ((int) ($a->transaction_pk ?? 0)));
         return $merged;
     }
 
@@ -279,36 +387,61 @@ class SteveDataSource
 
     public function getLatestMeterValue(int $transactionPk, ?string $measurand = null): ?object
     {
+        $cacheKey = "meter:{$transactionPk}:" . ($measurand ?? 'all');
+        if (isset(static::$localCache[$cacheKey])) {
+            return static::$localCache[$cacheKey];
+        }
+
         if (!$this->usingRedis()) {
             $q = DB::connection('steve')->table('connector_meter_value')->where('transaction_pk', $transactionPk);
             if ($measurand) {
                 $q->where('measurand', $measurand);
             }
-            return $q->orderBy('value_timestamp', 'desc')->first();
+            $latest = $q->orderBy('value_timestamp', 'desc')->first();
+        } else {
+            $prefix = $this->redisPrefix();
+            $txIdxKey = "{$prefix}:index:meter_values:tx:{$transactionPk}";
+
+            // Try the new per-transaction index first
+            $keys = $this->redis()->smembers($txIdxKey);
+
+            // Fallback to global index if tx-specific is empty (legacy data)
+            if (empty($keys)) {
+                $keys = $this->redis()->smembers("{$prefix}:index:meter_values");
+            }
+
+            if (empty($keys)) {
+                return null;
+            }
+
+            // Pipe hgetall for all candidate keys
+            $rawRows = $this->redis()->pipeline(function ($pipe) use ($keys) {
+                foreach ($keys as $key) {
+                    $pipe->hgetall($key);
+                }
+            });
+
+            $latestRow = null;
+            foreach ($rawRows as $raw) {
+                $row = $this->normalizeRedisRow($raw ?? []);
+                if (!$row)
+                    continue;
+
+                // If we used the global index, we must filter by transaction_pk
+                if ((int) ($row['transaction_pk'] ?? -1) !== $transactionPk)
+                    continue;
+                if ($measurand && ($row['measurand'] ?? null) !== $measurand)
+                    continue;
+
+                if (!$latestRow || (($row['value_timestamp'] ?? '') > ($latestRow['value_timestamp'] ?? ''))) {
+                    $latestRow = $row;
+                }
+            }
+            $latest = $latestRow ? (object) $latestRow : null;
         }
 
-        $prefix = $this->redisPrefix();
-        $keys = $this->redis()->smembers("{$prefix}:index:meter_values");
-        $latest = null;
-
-        foreach ($keys as $key) {
-            $row = $this->normalizeRedisRow($this->redis()->hgetall($key));
-            if (!$row) {
-                continue;
-            }
-            if ((int) ($row['transaction_pk'] ?? -1) !== $transactionPk) {
-                continue;
-            }
-            if ($measurand && ($row['measurand'] ?? null) !== $measurand) {
-                continue;
-            }
-
-            if (!$latest || (($row['value_timestamp'] ?? '') > ($latest['value_timestamp'] ?? ''))) {
-                $latest = $row;
-            }
-        }
-
-        return $latest ? (object) $latest : null;
+        static::$localCache[$cacheKey] = $latest;
+        return $latest;
     }
 
     public function getLatestEnergyMeterValue(int $transactionPk): ?object
@@ -358,7 +491,7 @@ class SteveDataSource
                 ->orderBy('ocpp_tag_pk', 'desc')
                 ->limit($limit)
                 ->get()
-                ->map(fn ($r) => (array) $r)
+                ->map(fn($r) => (array) $r)
                 ->all();
         }
 
@@ -373,7 +506,7 @@ class SteveDataSource
             $rows[] = $row;
         }
 
-        usort($rows, fn ($a, $b) => strcmp((string) ($b['id_tag'] ?? ''), (string) ($a['id_tag'] ?? '')));
+        usort($rows, fn($a, $b) => strcmp((string) ($b['id_tag'] ?? ''), (string) ($a['id_tag'] ?? '')));
         return array_slice($rows, 0, $limit);
     }
 
@@ -413,7 +546,7 @@ class SteveDataSource
             $rows[] = (object) $this->enrichTransaction($row);
         }
 
-        usort($rows, fn ($a, $b) => ((int) ($a->transaction_pk ?? 0)) <=> ((int) ($b->transaction_pk ?? 0)));
+        usort($rows, fn($a, $b) => ((int) ($a->transaction_pk ?? 0)) <=> ((int) ($b->transaction_pk ?? 0)));
         return array_slice($rows, 0, $limit);
     }
 }

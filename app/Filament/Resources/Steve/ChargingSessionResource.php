@@ -21,6 +21,21 @@ class ChargingSessionResource extends Resource
     protected static ?string $navigationGroup = 'System / Debug';
     protected static ?string $navigationLabel = 'Raw Logs (Steve)';
 
+    public static function canCreate(): bool
+    {
+        return false;
+    }
+
+    public static function canEdit(\Illuminate\Database\Eloquent\Model $record): bool
+    {
+        return false;
+    }
+
+    public static function canDelete(\Illuminate\Database\Eloquent\Model $record): bool
+    {
+        return false;
+    }
+
     public static function form(Form $form): Form
     {
         return $form
@@ -84,7 +99,8 @@ class ChargingSessionResource extends Resource
                     ->searchable()
                     ->sortable()
                     ->formatStateUsing(function ($state) {
-                        if (empty($state)) return '-';
+                        if (empty($state))
+                            return '-';
                         // Try to find the user in CMS database associated with this tag
                         $tag = \App\Models\RfidTag::where('tag_code', $state)->with('user')->first();
                         if ($tag && $tag->user) {
@@ -92,12 +108,12 @@ class ChargingSessionResource extends Resource
                         }
                         return "Unknown User";
                     })
-                    ->description(fn ($state) => $state), // Show Tag Code in description
+                    ->description(fn($state) => $state), // Show Tag Code in description
 
                 Tables\Columns\TextColumn::make('status')
                     ->label('Status')
                     ->badge()
-                    ->color(fn ($state): string => match ($state) {
+                    ->color(fn($state): string => match ($state) {
                         'Active' => 'success', // Active is good!
                         'Finished' => 'gray',
                         default => 'warning',

@@ -2,17 +2,49 @@
 
 namespace App\Models\Steve;
 
-use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Sushi\Sushi;
 
 class ConnectorStatus extends Model
 {
-    use HasFactory;
+    use Sushi;
 
-    protected $connection = 'steve';
-    protected $table = 'connector_status';
-    protected $primaryKey = 'connector_pk'; // Actually shares PK with connector (composite or related)
+    protected $primaryKey = 'connector_pk';
     public $timestamps = false;
+
+    protected array $schema = [
+        'connector_pk' => 'integer',
+        'status' => 'string',
+        'status_timestamp' => 'datetime',
+        'error_code' => 'string',
+    ];
+
+    public function getRows()
+    {
+        $dataSource = app(\App\Services\SteveDataSource::class);
+        $allConnectors = $dataSource->getConnectorsWithStatus();
+
+        if (empty($allConnectors)) {
+            return [];
+        }
+
+        $rows = [];
+        foreach ($allConnectors as $c) {
+            // We use the already populated $c->status from SteveDataSource
+            $rows[] = [
+                'connector_pk' => $c->connector_pk,
+                'status' => $c->status ?? 'Unknown',
+                'status_timestamp' => date('Y-m-d H:i:s'),
+                'error_code' => 'NoError',
+            ];
+        }
+        return $rows;
+    }
+
+    protected function sushiShouldCache()
+    {
+        return false;
+    }
 
     public function connector()
     {

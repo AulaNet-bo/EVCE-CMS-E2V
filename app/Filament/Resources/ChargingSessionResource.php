@@ -22,6 +22,21 @@ class ChargingSessionResource extends Resource
     protected static ?string $navigationGroup = 'Business';
     protected static ?int $navigationSort = 1;
 
+    public static function canCreate(): bool
+    {
+        return false;
+    }
+
+    public static function canEdit(\Illuminate\Database\Eloquent\Model $record): bool
+    {
+        return false;
+    }
+
+    public static function canDelete(\Illuminate\Database\Eloquent\Model $record): bool
+    {
+        return false;
+    }
+
     public static function form(Form $form): Form
     {
         return $form
@@ -86,10 +101,10 @@ class ChargingSessionResource extends Resource
                     ->label('Tx ID')
                     ->searchable()
                     ->toggleable(),
-                
+
                 Tables\Columns\TextColumn::make('station.name')
                     ->label('Station Name')
-                    ->description(fn (ChargingSession $record): string => $record->station->charge_box_id ?? '-')
+                    ->description(fn(ChargingSession $record): string => $record->station->charge_box_id ?? '-')
                     ->searchable()
                     ->sortable(),
 
@@ -107,13 +122,13 @@ class ChargingSessionResource extends Resource
 
                 Tables\Columns\TextColumn::make('user.name')
                     ->label('Client')
-                    ->description(fn (ChargingSession $record): string => $record->user->email ?? '')
+                    ->description(fn(ChargingSession $record): string => $record->user->email ?? '')
                     ->searchable()
                     ->sortable(),
 
                 Tables\Columns\TextColumn::make('status')
                     ->badge()
-                    ->color(fn (string $state): string => match ($state) {
+                    ->color(fn(string $state): string => match ($state) {
                         'Active' => 'warning',
                         'Completed' => 'success',
                         'Faulted' => 'danger',
@@ -129,21 +144,21 @@ class ChargingSessionResource extends Resource
                 // COST vs PRICE
                 Tables\Columns\TextColumn::make('utility_cost')
                     ->label('Op. Cost')
-                    ->money(fn ($record) => $record->currency)
+                    ->money(fn($record) => $record->currency)
                     ->color('gray')
                     ->toggleable(),
 
                 Tables\Columns\TextColumn::make('total_cost')
                     ->label('Sale Price')
-                    ->money(fn ($record) => $record->currency)
+                    ->money(fn($record) => $record->currency)
                     ->weight('bold')
                     ->color('success')
                     ->sortable(),
 
                 Tables\Columns\TextColumn::make('margin')
                     ->label('Profit')
-                    ->money(fn ($record) => $record->currency)
-                    ->color(fn ($state) => $state > 0 ? 'success' : 'danger')
+                    ->money(fn($record) => $record->currency)
+                    ->color(fn($state) => $state > 0 ? 'success' : 'danger')
                     ->toggleable(),
 
                 Tables\Columns\TextColumn::make('start_time')
@@ -168,7 +183,7 @@ class ChargingSessionResource extends Resource
                 Tables\Actions\Action::make('invoice')
                     ->label('Invoice')
                     ->icon('heroicon-o-document-text')
-                    ->modalContent(fn (ChargingSession $record) => view('filament.pages.invoice-modal', ['record' => $record]))
+                    ->modalContent(fn(ChargingSession $record) => view('filament.pages.invoice-modal', ['record' => $record]))
                     ->modalSubmitAction(false) // View only
                     ->modalCancelActionLabel('Close'),
             ])

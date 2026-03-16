@@ -23,14 +23,19 @@ class AdminPanelProvider extends PanelProvider
 {
     public function panel(Panel $panel): Panel
     {
+        $settings = \App\Models\SystemSetting::get();
+
         return $panel
             ->default()
             ->id('admin')
             ->path('admin')
             ->login()
+            ->brandName($settings->platform_name)
+            ->brandLogo($settings->logo_path ? asset('storage/' . $settings->logo_path) : null)
             ->colors([
-                'primary' => Color::Amber,
+                'primary' => $settings->primary_color ?? '#0076D6',
             ])
+            ->font($settings->font_family ?? 'Manrope')
             ->discoverResources(in: app_path('Filament/Resources'), for: 'App\\Filament\\Resources')
             ->discoverPages(in: app_path('Filament/Pages'), for: 'App\\Filament\\Pages')
             ->pages([

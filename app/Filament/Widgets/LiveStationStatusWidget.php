@@ -12,8 +12,8 @@ class LiveStationStatusWidget extends BaseWidget
 {
     protected static ?string $heading = 'Live Station Status';
 
-    // Refresh every 3s
-    protected static ?string $pollingInterval = '3s';
+    // Refresh every 10s to reduce load
+    protected static ?string $pollingInterval = '10s';
 
     // Take up full width
     protected int|string|array $columnSpan = 'full';
@@ -24,7 +24,7 @@ class LiveStationStatusWidget extends BaseWidget
             ->query(
                 Station::query()->with(['connectors.status'])
             )
-            ->poll('3s') // Enforce polling on the table component itself
+            ->poll('10s') // Enforce polling on the table component itself
             ->columns([
                 Tables\Columns\TextColumn::make('charge_box_id')
                     ->label('Station ID')
@@ -39,20 +39,28 @@ class LiveStationStatusWidget extends BaseWidget
 
                 Tables\Columns\TextColumn::make('station_status')
                     ->label('Station Status')
-                    ->state(function ($record) {
+                    ->state(function ($record, Tables\Columns\TextColumn $column) {
+                        // Batch fetch for the whole request if not done
+                        static $statusesBatch = null;
+                        $dataSource = app(\App\Services\SteveDataSource::class);
+
+                        if ($statusesBatch === null) {
+                            // Extract all connector PKs from the current query result if possible
+                            // However, since we are in a row-level closure, we'll try to get them from the table's records
+                            $allRecords = $column->getTable()->getRecords();
+                            $pks = [];
+                            foreach ($allRecords as $row) {
+                                foreach ($row->connectors as $conn) {
+                                    $pks[] = $conn->connector_pk;
+                                }
+                            }
+                            $statusesBatch = $dataSource->getMultipleConnectorStatuses($pks);
+                        }
+
                         $stationStatus = $record->connectors->where('connector_id', 0)->first();
-                        // Also fetch station status fresh
-                        $statusText = 'Available'; // Default to Available if Connector 0 is missing
+                        $statusText = 'Available';
                         if ($stationStatus) {
-                            $stObj = \Illuminate\Support\Facades\DB::connection('steve')->table('connector_status')
-                                ->where('connector_pk', $stationStatus->connector_pk)
-                                ->orderBy('status_timestamp', 'desc')
-                                ->first();
-                            $statusText = $stObj->status ?? 'Unknown';
-                        } else {
-                            // If no Connector 0, infer from Connector 1? Or just say Available
-                            // Many CPs don't report Connector 0 status explicitly
-                            $statusText = 'Available';
+                            $statusText = $statusesBatch[$stationStatus->connector_pk] ?? 'Unknown';
                         }
                         return $statusText;
                     })
@@ -67,15 +75,34 @@ class LiveStationStatusWidget extends BaseWidget
 
                 Tables\Columns\TextColumn::make('connectors')
                     ->label('Connectors (Guns)')
-                    ->formatStateUsing(function ($record) {
+                    ->formatStateUsing(function ($record, Tables\Columns\TextColumn $column) {
+                        // Reuse the batch from the previous column closure!
+                        static $statusesBatch = null;
+                        static $activeTxs = null;
+                        $dataSource = app(\App\Services\SteveDataSource::class);
+
+                        if ($statusesBatch === null) {
+                            $allRecords = $column->getTable()->getRecords();
+                            $pks = [];
+                            foreach ($allRecords as $row) {
+                                foreach ($row->connectors as $conn) {
+                                    $pks[] = $conn->connector_pk;
+                                }
+                            }
+                            $statusesBatch = $dataSource->getMultipleConnectorStatuses($pks);
+                        }
+
+                        if ($activeTxs === null) {
+                            $activeTxs = collect($dataSource->getTransactionsForMonitoring(50));
+                        }
+
                         $html = '<div class="flex gap-2">';
 
                         // Get Station Status (Connector 0)
                         $stationStatusObj = $record->connectors->where('connector_id', 0)->first();
-                        $stationStatus = $stationStatusObj ? ($stationStatusObj->status->status ?? 'Available') : 'Available';
+                        $stationStatus = $stationStatusObj ? ($statusesBatch[$stationStatusObj->connector_pk] ?? 'Available') : 'Available';
                         $isStationDown = in_array($stationStatus, ['Unavailable', 'Faulted']);
 
-                        // Sort by connector_id and filter out 0 (Station Status)
                         $connectors = $record->connectors
                             ->where('connector_id', '>', 0)
                             ->sortBy('connector_id');
@@ -85,19 +112,7 @@ class LiveStationStatusWidget extends BaseWidget
                         }
 
                         foreach ($connectors as $connector) {
-                            // Fetch latest status dynamically if relationship isn't eager loading correctly or is stale
-                            // The eager loaded 'status' might be old or weird relationship mapping
-                            // Let's get it fresh from DB for reliability
-                            
-                            $latestStatusObj = \Illuminate\Support\Facades\DB::connection('steve')->table('connector_status')
-                                ->where('connector_pk', $connector->connector_pk)
-                                ->orderBy('status_timestamp', 'desc')
-                                ->first();
-
-                            $realStatus = $latestStatusObj ? $latestStatusObj->status : 'Unknown';
-                            
-                            // If station is down (heartbeat old?), maybe force unavailable?
-                            // But let's trust the connector status for now.
+                            $realStatus = $statusesBatch[$connector->connector_pk] ?? 'Unknown';
                             $status = $realStatus;
 
                             $icon = match ($status) {
@@ -109,7 +124,6 @@ class LiveStationStatusWidget extends BaseWidget
                                 default => '❓',
                             };
 
-                            // Determine color class based on status for visual styling
                             $bgClass = match ($status) {
                                 'Available' => 'bg-green-100 text-green-800 border-green-200',
                                 'Charging' => 'bg-yellow-100 text-yellow-800 border-yellow-200 animate-pulse',
@@ -118,43 +132,23 @@ class LiveStationStatusWidget extends BaseWidget
                                 default => 'bg-gray-100 text-gray-800 border-gray-200',
                             };
 
-                            // Extra Info for Charging Status (Power / Energy)
                             $extraInfo = '';
                             if ($status === 'Charging') {
-                                // Fetch active transaction info from Steve DB for this connector
-                                // The connector object here IS from Steve DB (App\Models\Steve\Connector)
-                                // So we have connector_pk directly.
-                                
-                                $connectorPk = $connector->connector_pk;
+                                // Find active transaction fast from statically loaded memory collection!
+                                $tx = $activeTxs->where('connector_pk', $connector->connector_pk)->whereNull('stop_timestamp')->first();
 
-                                if ($connectorPk) {
-                                    // Fetch active transaction info from Steve DB for this connector
-                                    $tx = \Illuminate\Support\Facades\DB::connection('steve')->table('transaction')
-                                        ->where('connector_pk', $connectorPk)
-                                        ->whereNull('stop_timestamp')
-                                        ->orderBy('start_timestamp', 'desc')
-                                        ->first();
+                                if ($tx) {
+                                    $lastPower = $dataSource->getLatestMeterValue($tx->transaction_pk, 'Power.Active.Import');
 
-                                    if ($tx) {
-                                        // Fetch latest Power (W)
-                                        $lastPower = \Illuminate\Support\Facades\DB::connection('steve')->table('connector_meter_value')
-                                            ->where('transaction_pk', $tx->transaction_pk)
-                                            ->where('measurand', 'Power.Active.Import')
-                                            ->orderBy('value_timestamp', 'desc')
-                                            ->first();
-                                        
-                                        if ($lastPower) {
-                                            // W to kW
-                                            $kw = number_format($lastPower->value / 1000, 1);
-                                            $extraInfo = "<span class='block text-[10px] mt-1 font-bold'>⚡ {$kw} kW</span>";
-                                        } else {
-                                             $extraInfo = "<span class='block text-[10px] mt-1'>...</span>";
-                                        }
+                                    if ($lastPower) {
+                                        $kw = number_format($lastPower->value / 1000, 1);
+                                        $extraInfo = "<span class='block text-[10px] mt-1 font-bold'>⚡ {$kw} kW</span>";
+                                    } else {
+                                        $extraInfo = "<span class='block text-[10px] mt-1'>...</span>";
                                     }
                                 }
                             }
 
-                            // Add tooltip note if overrided
                             $title = $isStationDown && $realStatus !== 'Unavailable'
                                 ? "Station is $stationStatus (Connector was $realStatus)"
                                 : "Connector {$connector->connector_id}: $status";

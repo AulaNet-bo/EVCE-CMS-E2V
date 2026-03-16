@@ -50,6 +50,17 @@ class ChargingSessionController extends Controller
             ], 502);
         }
 
+        // Notify the user
+        try {
+            $user->notify(new \App\Notifications\GeneralNotification(
+                'Carga solicitada',
+                "Se ha enviado la orden de inicio a la estación {$station->name} (Conector {$connectorId}).",
+                ['type' => 'CHARGING_START', 'station_id' => $station->id]
+            ));
+        } catch (\Throwable $e) {
+            Log::error('Notification error in Charging start', ['error' => $e->getMessage()]);
+        }
+
         return response()->json([
             'message' => 'Solicitud de inicio enviada al cargador',
             'station' => $station->name,
@@ -95,6 +106,17 @@ class ChargingSessionController extends Controller
                 'detail' => $result['detail'],
                 'status' => 'error',
             ], 502);
+        }
+
+        // Notify the user
+        try {
+            $request->user()->notify(new \App\Notifications\GeneralNotification(
+                'Carga detenida',
+                "Se ha enviado la orden de parada a la estación {$station->name}.",
+                ['type' => 'CHARGING_STOP', 'station_id' => $station->id]
+            ));
+        } catch (\Throwable $e) {
+            Log::error('Notification error in Charging stop', ['error' => $e->getMessage()]);
         }
 
         return response()->json([

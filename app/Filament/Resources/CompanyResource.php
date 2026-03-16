@@ -14,7 +14,12 @@ class CompanyResource extends Resource
 {
     protected static ?string $model = Company::class;
     protected static ?string $navigationIcon = 'heroicon-o-building-office-2';
-    protected static ?string $navigationGroup = 'Business';
+    protected static ?string $navigationGroup = 'Configuración';
+
+    public static function canViewAny(): bool
+    {
+        return auth()->user()->hasRole('super_admin');
+    }
 
     public static function form(Form $form): Form
     {
@@ -35,11 +40,11 @@ class CompanyResource extends Resource
                             ->tel()
                             ->maxLength(50),
                     ])->columns(2),
-                
+
                 Forms\Components\FileUpload::make('logo_path')
                     ->image()
                     ->directory('companies'),
-                
+
                 Forms\Components\Toggle::make('is_active')
                     ->label('Active Status')
                     ->default(true),

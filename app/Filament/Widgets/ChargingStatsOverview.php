@@ -9,7 +9,7 @@ use Carbon\Carbon;
 
 class ChargingStatsOverview extends BaseWidget
 {
-    protected static ?string $pollingInterval = '3s';
+    protected static ?string $pollingInterval = '15s';
 
     protected function getStats(): array
     {
@@ -30,7 +30,7 @@ class ChargingStatsOverview extends BaseWidget
         $sales = $stats->total_sales ?? 0;
         $utility = $stats->total_utility ?? 0;
         $profit = $stats->total_profit ?? 0;
-        
+
         return [
             Stat::make('Revenue (Live This Month)', number_format($sales, 2) . ' ' . $currency)
                 ->description('Accrued billed amount (active + completed)')
@@ -47,7 +47,7 @@ class ChargingStatsOverview extends BaseWidget
                 ->description('Accrued revenue - utility cost')
                 ->descriptionIcon('heroicon-m-currency-dollar')
                 ->color('primary'),
-                
+
             Stat::make('Energy Delivered', number_format($energy, 2) . ' kWh')
                 ->description('Total energy dispensed')
                 ->descriptionIcon('heroicon-m-battery-100')

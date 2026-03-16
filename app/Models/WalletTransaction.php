@@ -23,6 +23,11 @@ class WalletTransaction extends Model
         'invoice_number',
         'invoice_url',
         'description',
+        'bank_receipt_number',
+        'pos_correlative',
+        'payment_method',
+        'payment_evidence_path',
+        'sap_synced_at',
         'metadata',
     ];
 

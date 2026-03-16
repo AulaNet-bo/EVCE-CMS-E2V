@@ -38,6 +38,11 @@ class LocationResource extends Resource
                 Forms\Components\TextInput::make('longitude')
                     ->numeric()
                     ->default(null),
+                Forms\Components\TextInput::make('google_maps_url')
+                    ->label('Google Maps URL')
+                    ->url()
+                    ->maxLength(255)
+                    ->default(null),
                 Forms\Components\TextInput::make('city')
                     ->maxLength(255)
                     ->default(null),

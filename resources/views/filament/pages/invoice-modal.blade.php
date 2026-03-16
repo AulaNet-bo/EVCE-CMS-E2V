@@ -33,29 +33,38 @@
             </tr>
         </thead>
         <tbody>
-            <tr class="border-b dark:border-gray-700">
-                <td class="px-4 py-2">EV Charging ({{ $record->total_energy_kwh }} kWh)</td>
-                <td class="px-4 py-2 text-right">{{ number_format($record->total_energy_kwh, 2) }}</td>
-                <td class="px-4 py-2 text-right">{{ number_format($record->rate_kwh ?? 0, 2) }}</td>
-                <td class="px-4 py-2 text-right">{{ number_format($record->total_energy_kwh * ($record->rate_kwh ?? 0), 2) }}</td>
-            </tr>
-            @php
-                $energyCost = $record->total_energy_kwh * ($record->rate_kwh ?? 0);
-                $fees = $record->total_cost - $energyCost;
-            @endphp
-            @if($fees > 0.01)
-            <tr class="border-b dark:border-gray-700">
-                <td class="px-4 py-2">Service / Time Fees</td>
-                <td class="px-4 py-2 text-right">1</td>
-                <td class="px-4 py-2 text-right">-</td>
-                <td class="px-4 py-2 text-right">{{ number_format($fees, 2) }}</td>
-            </tr>
+            @if(($record->energy_cost ?? 0) > 0)
+                <tr class="border-b dark:border-gray-700">
+                    <td class="px-4 py-2">Cargo por energía ({{ $record->total_energy_kwh }} kWh)</td>
+                    <td class="px-4 py-2 text-right">{{ number_format($record->total_energy_kwh, 2) }}</td>
+                    <td class="px-4 py-2 text-right">{{ number_format($record->rate_kwh ?? 0, 2) }}</td>
+                    <td class="px-4 py-2 text-right">{{ number_format($record->energy_cost, 2) }}</td>
+                </tr>
+            @endif
+
+            @if(($record->session_fee ?? 0) > 0)
+                <tr class="border-b dark:border-gray-700">
+                    <td class="px-4 py-2">Fee de servicio</td>
+                    <td class="px-4 py-2 text-right">1</td>
+                    <td class="px-4 py-2 text-right">-</td>
+                    <td class="px-4 py-2 text-right">{{ number_format($record->session_fee, 2) }}</td>
+                </tr>
+            @endif
+
+            @if(($record->time_fee ?? 0) > 0)
+                <tr class="border-b dark:border-gray-700">
+                    <td class="px-4 py-2">Multa por exceso de tiempo</td>
+                    <td class="px-4 py-2 text-right">1</td>
+                    <td class="px-4 py-2 text-right">-</td>
+                    <td class="px-4 py-2 text-right">{{ number_format($record->time_fee, 2) }}</td>
+                </tr>
             @endif
         </tbody>
         <tfoot>
             <tr class="font-bold text-lg">
                 <td colspan="3" class="px-4 py-2 text-right">Total</td>
-                <td class="px-4 py-2 text-right">{{ number_format($record->total_cost, 2) }} {{ $record->currency }}</td>
+                <td class="px-4 py-2 text-right">{{ number_format($record->total_cost, 2) }} {{ $record->currency }}
+                </td>
             </tr>
         </tfoot>
     </table>

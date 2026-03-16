@@ -1,16 +1,13 @@
 <?php
-
 use App\Models\User;
 use Illuminate\Support\Facades\Hash;
 
-$user = User::firstOrCreate(
+$user = User::updateOrCreate(
     ['email' => 'admin@admin.com'],
     [
-        'name' => 'Super Admin',
-        'password' => Hash::make('password'),
+        'name' => 'Admin',
+        'password' => Hash::make('admin123'),
     ]
 );
 
-// If Shield is active, assign super_admin role if exists, otherwise basic access
-// For now, just ensuring the user exists. Filament usually allows the first user or local users.
-echo "User created: " . $user->email . "\n";
+echo "SUCCESS: Admin user created/updated (admin@admin.com / admin123)\n";

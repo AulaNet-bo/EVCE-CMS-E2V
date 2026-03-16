@@ -20,6 +20,7 @@ class Location extends Model
         'city',
         'country',
         'image_path',
+        'google_maps_url',
         'is_public',
     ];
 

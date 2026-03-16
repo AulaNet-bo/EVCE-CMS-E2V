@@ -1,0 +1,91 @@
+================================================================================
+ESPECIFICACION TECNICA: INTEGRACION API EVCE -> SAP (v1.0)
+================================================================================
+
+TOKEN_DE_ACCESO> 30|iKSlwxhhHVCJh5C8CupoDpCHCGFw84VlsCCO2GtFse6f7ea91
+dominio_app> e2v.evbol.com
+1. DESCRIPCION GENERAL
+----------------------
+La plataforma EVCE proporciona una API REST para la extraccion de datos maestros
+y transaccionales necesarios para la contabilidad y gestion en SAP. La API permite
+la exportacion de clientes, pagos recibidos y sesiones de carga de energia.
+
+2. AUTENTICACION
+----------------
+Tipo: Bearer Token (Sanctum)
+Header: Authorization: Bearer {TOKEN_DE_ACCESO}
+URL Base: https://{dominio_app}/api/v1/sap/
+
+3. ENDPOINT DE EXPORTACION (PULL)
+---------------------------------
+GET /api/v1/sap/export
+
+Parametros de consulta (Query Params):
+- type: (Requerido) Tipo de datos a consultar. 
+        Opciones: [customers, payments, sessions]
+- only_unsynced: (Opcional) Si es 1, solo devuelve registros no procesados.
+        Opciones: [0, 1]
+
+--------------------------------------------------------------------------------
+A. TYPE: customers (Maestro de Clientes)
+Campos devueltos:
+- sap_client_code: Codigo de cliente homologado en SAP.
+- name: Nombre completo del usuario.
+- email: Correo electronico (Identificador unico).
+- razon_social: Nombre para facturacion.
+- nit_ci: Numero de identificacion (NIT o CI).
+- doc_type: Tipo de documento (CI, NIT, CE, etc).
+- synced_at: Fecha/Hora de la ultima sincronizacion con SAP (ISO 8601).
+
+B. TYPE: payments (Pagos de Billetera / Recargas)
+Campos devueltos:
+- sap_client_code: Codigo de cliente SAP asociado.
+- customer_name: Nombre del cliente.
+- date: Fecha y hora de la transaccion.
+- amount: Monto de la recarga (Decimal).
+- currency: Moneda (ej. BOB).
+- payment_method: Metodo de pago (ej. LIBELULA, POS, TRANSFERENCIA).
+- bank_receipt: Numero de comprobante bancario (si aplica).
+- pos_correlative: Numero correlativo del POS (si aplica).
+- internal_ref: ID unico interno de la transaccion.
+
+C. TYPE: sessions (Venta de Energia / Consumos)
+Campos devueltos:
+- sap_client_code: Codigo de cliente SAP asociado.
+- customer_name: Nombre del cliente.
+- nit: NIT/CI para la factura.
+- razon_social: Razon Social para la factura.
+- station: Nombre del cargador/estacion donde se realizo la carga.
+- start_time: Inicio de carga.
+- end_time: Fin de carga.
+- energy_kwh: Cantidad de energia entregada (kWh).
+- item_code: Codigo de item contable (ej. EV_CHARGE).
+- item_description: Descripcion del servicio.
+- price_unit: Tarifa aplicada por kWh.
+- total_amount: Monto total a facturar.
+- currency: Moneda.
+- internal_ref: ID unico interno de la sesion.
+--------------------------------------------------------------------------------
+
+4. ENDPOINT DE CONFIRMACION (ACK)
+---------------------------------
+POST /api/v1/sap/sync
+
+Este endpoint se utiliza para marcar los registros como "Sincronizados", 
+asegurando que no se dupliquen en la proxima consulta.
+
+Cuerpo de la peticion (JSON):
+{
+    "type": "customers",  // o "payments", o "sessions"
+    "ids": [10, 11, 12]    // Lista de 'internal_ref' procesados exitosamente
+}
+
+Respuesta:
+{ "message": "Records marked as synced successfully." }
+
+5. NOTAS ADICIONALES
+--------------------
+- Los datos se devuelven en formato JSON.
+- Las fechas estan en formato ISO 8601 (UTC).
+- Se recomienda una frecuencia de consulta cada hora o cierre de dia.
+================================================================================

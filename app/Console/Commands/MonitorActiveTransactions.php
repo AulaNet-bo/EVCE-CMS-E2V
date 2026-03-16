@@ -20,24 +20,32 @@ use App\Services\SteveDataSource;
 
 class MonitorActiveTransactions extends Command
 {
-    protected $signature = 'steve:monitor-transactions';
+    protected $signature = 'steve:monitor-transactions {--daemon}';
     protected $description = 'Monitors active transactions in Steve, calculates cost, and enforces credit limits';
 
     public function handle(SteveDataSource $source)
     {
-        $this->info("🔍 Scanning ALL transactions (Active & Recently Completed) in Steve ({$source->source()})...");
+        $isDaemon = $this->option('daemon');
 
-        try {
-            $recentTxs = collect($source->getTransactionsForMonitoring(20));
+        do {
+            $this->info("🔍 Scanning ALL transactions (Active & Recently Completed) in Steve ({$source->source()})...");
 
-            foreach ($recentTxs as $tx) {
-                $this->processTransaction($tx, $source);
+            try {
+                $recentTxs = collect($source->getTransactionsForMonitoring(20));
+
+                foreach ($recentTxs as $tx) {
+                    $this->processTransaction($tx, $source);
+                }
+
+            } catch (\Exception $e) {
+                $this->error("🔥 Monitor Failed: " . $e->getMessage());
+                Log::error("Monitor Failed", ['error' => $e]);
             }
 
-        } catch (\Exception $e) {
-            $this->error("🔥 Monitor Failed: " . $e->getMessage());
-            Log::error("Monitor Failed", ['error' => $e]);
-        }
+            if ($isDaemon) {
+                sleep(2);
+            }
+        } while ($isDaemon);
     }
 
     private function processTransaction($tx, SteveDataSource $source)
@@ -55,22 +63,22 @@ class MonitorActiveTransactions extends Command
             $this->line("↪️  Tx #{$txId} already completed in CMS, keeping historical values.");
             return;
         }
-        
+
         $this->line("👉 Analyzing Tx #{$txId} (Tag: {$tagCode})");
 
         // 2. Identify User & Wallet in CMS
         $tag = RfidTag::where('tag_code', $tagCode)->first();
         // Allow creating session even if tag/user missing (Guest/Unknown)
-        
+
         $userId = $tag?->user_id;
         $wallet = $userId ? Wallet::firstOrCreate(['user_id' => $userId]) : null;
-        
+
         // 3. Get Meter Values
         // For Completed Txs, Steve has stop_value directly in transaction table
         // For Active Txs, get latest from connector_meter_value
-        
+
         $isCompleted = !is_null($tx->stop_timestamp ?? null);
-        
+
         if ($isCompleted) {
             $currentWh = floatval($stopValue);
         } else {
@@ -85,7 +93,7 @@ class MonitorActiveTransactions extends Command
 
         // Calculate Consumption
         $startWh = floatval($tx->start_value ?? 0);
-        
+
         // Energy in kWh (Steve reports Wh)
         $consumedKwh = max(0, ($currentWh - $startWh) / 1000);
 
@@ -93,10 +101,10 @@ class MonitorActiveTransactions extends Command
         // Get ChargeBox ID
         $connector = $source->getConnectorByPk((int) ($tx->connector_pk ?? 0));
         $chargeBoxId = $connector->charge_box_id ?? 'Unknown';
-        
+
         $station = Station::where('charge_box_id', $chargeBoxId)->first();
         $tariff = $this->resolveApplicableTariff($station, $startTimestamp);
-        
+
         $cost = 0;
         $utilityCost = 0;
         $rateKwh = 0;
@@ -107,21 +115,21 @@ class MonitorActiveTransactions extends Command
             $pricing = $this->calculateCost($consumedKwh, $startTimestamp, $tariff, $stopTimestamp);
             $cost = $pricing['total'];
             $rateKwh = $pricing['rate'];
-            
+
             // Utility Cost based on Time Block
             $baseCostPerKwh = $pricing['cost_rate'] ?? 0.10; // Fallback to 0.10 if not set
             $utilityCost = $consumedKwh * $baseCostPerKwh;
-            
+
             $currency = $tariff->currency ?? 'USD';
         }
-        
+
         $margin = $cost - $utilityCost;
 
         // 6. Enforce Credit Limit & Deduct Balance (Only for Active sessions and known users)
         // Check if balance is sufficient
         $creditBlocked = false;
         if ($wallet) {
-             if (!$isCompleted && !$wallet->is_postpaid) {
+            if (!$isCompleted && !$wallet->is_postpaid) {
                 // Enforce fee de parqueo first, then energy cost
                 $sessionFee = $pricing['session_fee'] ?? 0;
                 $energyCost = $pricing['energy_cost'] ?? $cost;
@@ -136,61 +144,61 @@ class MonitorActiveTransactions extends Command
                     $this->remoteStop($chargeBoxId, $txId);
                     $creditBlocked = true;
                 }
-             }
-             
-             // Deduct on completion (idempotent, compatible with legacy/new wallet_transactions schemas)
-             if ($isCompleted) {
-                 $refCol = $this->walletTxRefColumn();
-                 $statusCol = $this->walletTxStatusColumn();
+            }
 
-                 $alreadyQ = DB::table('wallet_transactions')
-                     ->where('wallet_id', $wallet->id)
-                     ->where('type', 'CHARGE')
-                     ->where($refCol, (string) $txId);
+            // Deduct on completion (idempotent, compatible with legacy/new wallet_transactions schemas)
+            if ($isCompleted) {
+                $refCol = $this->walletTxRefColumn();
+                $statusCol = $this->walletTxStatusColumn();
 
-                 if ($statusCol) {
-                     $alreadyQ->where($statusCol, 'COMPLETED');
-                 }
+                $alreadyQ = DB::table('wallet_transactions')
+                    ->where('wallet_id', $wallet->id)
+                    ->where('type', 'CHARGE')
+                    ->where($refCol, (string) $txId);
 
-                 $alreadyCharged = $alreadyQ->exists();
+                if ($statusCol) {
+                    $alreadyQ->where($statusCol, 'COMPLETED');
+                }
 
-                 if (!$alreadyCharged) {
-                     if ($wallet->balance >= $cost) {
-                         $wallet->balance -= $cost;
-                         $wallet->save();
+                $alreadyCharged = $alreadyQ->exists();
 
-                         $insert = [
-                             'wallet_id' => $wallet->id,
-                             'type' => 'CHARGE',
-                             'amount' => -$cost,
-                             $refCol => (string) $txId,
-                             'description' => "EV Charging Session #{$txId} ({$consumedKwh} kWh)",
-                             'created_at' => now(),
-                             'updated_at' => now(),
-                         ];
+                if (!$alreadyCharged) {
+                    if ($wallet->balance >= $cost) {
+                        $wallet->balance -= $cost;
+                        $wallet->save();
 
-                         if (Schema::hasColumn('wallet_transactions', 'user_id')) {
-                             $insert['user_id'] = $userId;
-                         }
-                         if (Schema::hasColumn('wallet_transactions', 'balance_after')) {
-                             $insert['balance_after'] = $wallet->balance;
-                         }
-                         if (Schema::hasColumn('wallet_transactions', 'currency')) {
-                             $insert['currency'] = $currency;
-                         }
-                         if ($statusCol) {
-                             $insert[$statusCol] = 'COMPLETED';
-                         }
+                        $insert = [
+                            'wallet_id' => $wallet->id,
+                            'type' => 'CHARGE',
+                            'amount' => -$cost,
+                            $refCol => (string) $txId,
+                            'description' => "EV Charging Session #{$txId} ({$consumedKwh} kWh)",
+                            'created_at' => now(),
+                            'updated_at' => now(),
+                        ];
 
-                         DB::table('wallet_transactions')->insert($insert);
+                        if (Schema::hasColumn('wallet_transactions', 'user_id')) {
+                            $insert['user_id'] = $userId;
+                        }
+                        if (Schema::hasColumn('wallet_transactions', 'balance_after')) {
+                            $insert['balance_after'] = $wallet->balance;
+                        }
+                        if (Schema::hasColumn('wallet_transactions', 'currency')) {
+                            $insert['currency'] = $currency;
+                        }
+                        if ($statusCol) {
+                            $insert[$statusCol] = 'COMPLETED';
+                        }
 
-                         $this->info("   💰 Deducted {$cost} {$currency} from Wallet User: {$userId} (New Balance: {$wallet->balance})");
-                     } else {
-                         $creditBlocked = true;
-                         $this->warn("   ⚠️ Insufficient funds at completion. No deduction applied.");
-                     }
-                 }
-             }
+                        DB::table('wallet_transactions')->insert($insert);
+
+                        $this->info("   💰 Deducted {$cost} {$currency} from Wallet User: {$userId} (New Balance: {$wallet->balance})");
+                    } else {
+                        $creditBlocked = true;
+                        $this->warn("   ⚠️ Insufficient funds at completion. No deduction applied.");
+                    }
+                }
+            }
         }
 
         // 7. Update Sync Table (ChargingSession)
@@ -229,6 +237,9 @@ class MonitorActiveTransactions extends Command
                 'applied_tariff_id' => $appliedTariffId,
                 'applied_tariff_snapshot' => $appliedTariffSnapshot,
                 'total_energy_kwh' => $consumedKwh,
+                'session_fee' => $pricing['session_fee'] ?? 0,
+                'time_fee' => $pricing['time_fee'] ?? 0,
+                'energy_cost' => $pricing['energy_cost'] ?? 0,
                 'total_cost' => $cost,
                 'utility_cost' => $utilityCost,
                 'margin' => $margin,
@@ -245,7 +256,7 @@ class MonitorActiveTransactions extends Command
                 'updated_at' => now(),
             ]
         );
-        
+
         $this->line("   ✅ Synced Tx #{$txId}: " . ($isCompleted ? "Completed" : "Active") . " | {$consumedKwh} kWh | \${$cost}");
     }
 
@@ -278,16 +289,16 @@ class MonitorActiveTransactions extends Command
     private function calculateCost($kwh, $startTimeStr, $tariff, $stopTimeStr = null)
     {
         // Simple calculation for MVP
-        
+
         $start = Carbon::parse($startTimeStr);
         $stop = $stopTimeStr ? Carbon::parse($stopTimeStr) : Carbon::now();
-        
+
         // Use Start Time for Tariff Block determination (Simplification)
         $timeStr = $start->format('H:i:s');
-        
+
         $priceKwh = $tariff->b1_price_kwh; // Default Sell Price
         $costKwh = $tariff->b1_cost_kwh;   // Default Buy Cost
-        
+
         // Check blocks
         if ($this->isInBlock($timeStr, $tariff->b1_start, $tariff->b1_end)) {
             $priceKwh = $tariff->b1_price_kwh;
@@ -363,7 +374,7 @@ class MonitorActiveTransactions extends Command
             // Build selection value as used by SteVe UI
             $ocppToken = str_contains(strtolower($ocppProtocol), '16') ? 'V_16_JSON'
                 : (str_contains(strtolower($ocppProtocol), '15') ? 'V_15_JSON'
-                : 'V_12_JSON');
+                    : 'V_12_JSON');
             $chargePointSelectValue = $ocppToken . ';' . $chargeBoxId . ';' . ($endpointAddress ?: '-');
 
             // Use cookie jar to handle CSRF/session

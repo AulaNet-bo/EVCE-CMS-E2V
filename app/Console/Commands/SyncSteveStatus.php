@@ -47,12 +47,29 @@ class SyncSteveStatus extends Command
                         'is_active' => true,
                     ]
                 );
-                
+
                 // Update Heartbeat
                 if ($sConnector->last_heartbeat_timestamp) {
                     $station->last_heartbeat = $sConnector->last_heartbeat_timestamp;
-                    $station->save();
                 }
+
+                // Automatic Tariff Assignment
+                // Logic: Pick the latest valid tariff (where now is between valid_from and valid_until)
+                $now = now();
+                $activeTariff = \App\Models\Tariff::where(function ($query) use ($now) {
+                    $query->whereNull('valid_from')->orWhere('valid_from', '<=', $now);
+                })
+                    ->where(function ($query) use ($now) {
+                        $query->whereNull('valid_until')->orWhere('valid_until', '>=', $now);
+                    })
+                    ->orderBy('created_at', 'desc')
+                    ->first();
+
+                if ($activeTariff) {
+                    $station->tariff_id = $activeTariff->id;
+                }
+
+                $station->save();
 
                 // Sync Connector Status
                 $connector = Connector::updateOrCreate(

@@ -72,14 +72,15 @@ class LibelulaPaymentService
 
         DB::table('wallet_transactions')->where('id', $txId)->update([$refCol => $localReference]);
 
-        $canInvoice = !empty($invoiceData['documento']) && !empty($invoiceData['razon_social']);
+        // La factura se emitirá cuando se recargue energía (consumo), no al recargar saldo a la billetera.
+        $canInvoice = false;
 
         $payload = [
             'appkey' => $this->apiKey,
             'email_cliente' => $user->email,
             'identificador' => $localReference,
             'callback_url' => route('api.webhooks.libelula'),
-            'url_retorno' => url('/admin/wallets'),
+            'url_retorno' => $invoiceData['return_url'] ?? url('/admin/wallets'),
             'descripcion' => $description,
             'nombre_cliente' => $invoiceData['razon_social'] ?: $user->name,
             'moneda' => $wallet->currency ?? 'BOB',
@@ -108,7 +109,7 @@ class LibelulaPaymentService
             $resp = Http::timeout(20)->post("{$this->baseUrl}/deuda/registrar", $payload);
             $data = $resp->json() ?: [];
 
-            if (!$resp->successful() || (int)($data['error'] ?? 1) !== 0) {
+            if (!$resp->successful() || (int) ($data['error'] ?? 1) !== 0) {
                 $msg = $data['mensaje'] ?? ('HTTP ' . $resp->status());
                 $this->markFailed($txId, ['error' => $msg, 'response' => $data]);
 
@@ -180,8 +181,8 @@ class LibelulaPaymentService
             return;
         }
 
-        $status = strtoupper((string)($data['status'] ?? $data['estado'] ?? ''));
-        $paid = in_array($status, ['PAID', 'PAGADO', 'COMPLETED', 'SUCCESS'], true) || (int)($data['error'] ?? 0) === 0;
+        $status = strtoupper((string) ($data['status'] ?? $data['estado'] ?? ''));
+        $paid = in_array($status, ['PAID', 'PAGADO', 'COMPLETED', 'SUCCESS'], true) || (int) ($data['error'] ?? 0) === 0;
 
         if ($paid) {
             $this->markCompleted((int) $tx->id, $data);
@@ -199,7 +200,7 @@ class LibelulaPaymentService
             }
 
             $statusCol = Schema::hasColumn('wallet_transactions', 'status') ? 'status' : null;
-            if ($statusCol && strtoupper((string)$tx->{$statusCol}) === 'COMPLETED') {
+            if ($statusCol && strtoupper((string) $tx->{$statusCol}) === 'COMPLETED') {
                 return;
             }
 
@@ -208,7 +209,7 @@ class LibelulaPaymentService
                 return;
             }
 
-            $newBalance = round(((float)$wallet->balance) + ((float)$tx->amount), 2);
+            $newBalance = round(((float) $wallet->balance) + ((float) $tx->amount), 2);
             DB::table('wallets')->where('id', $wallet->id)->update([
                 'balance' => $newBalance,
                 'updated_at' => now(),
@@ -244,6 +245,20 @@ class LibelulaPaymentService
             }
 
             DB::table('wallet_transactions')->where('id', $txId)->update($update);
+
+            // Notify the user of successful recharge
+            try {
+                $user = \App\Models\User::find($wallet->user_id);
+                if ($user) {
+                    $user->notify(new \App\Notifications\GeneralNotification(
+                        'Recarga exitosa',
+                        "Tu recarga de Bs " . number_format($tx->amount, 2) . " ha sido procesada.",
+                        ['type' => 'RECHARGE', 'amount' => $tx->amount, 'transaction_id' => $txId]
+                    ));
+                }
+            } catch (\Throwable $e) {
+                Log::error('Notification error in Libelula markCompleted', ['error' => $e->getMessage()]);
+            }
         });
     }
 

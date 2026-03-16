@@ -12,6 +12,8 @@ use Filament\Tables;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\SoftDeletingScope;
+use Illuminate\Support\Facades\DB;
+use Filament\Notifications\Notification;
 
 class WalletTransactionResource extends Resource
 {
@@ -23,6 +25,8 @@ class WalletTransactionResource extends Resource
 
     public static function form(Form $form): Form
     {
+        $isAdminOrAccountant = fn() => auth()->user()?->hasRole(['super_admin', 'system_accountant']);
+
         return $form
             ->schema([
                 Forms\Components\Select::make('user_id')
@@ -32,18 +36,29 @@ class WalletTransactionResource extends Resource
                     ->disabled(),
                 Forms\Components\TextInput::make('amount')
                     ->numeric()
-                    ->prefix('$')
-                    ->disabled(),
-                Forms\Components\TextInput::make('status')
-                    ->disabled(),
+                    ->prefix('BOB')
+                    ->disabled(!$isAdminOrAccountant()),
+                Forms\Components\Select::make('status')
+                    ->options([
+                        'PENDING' => 'Pendiente',
+                        'COMPLETED' => 'Completado',
+                        'FAILED' => 'Fallido',
+                    ])
+                    ->disabled(!$isAdminOrAccountant()),
+                Forms\Components\FileUpload::make('payment_evidence_path')
+                    ->label('Evidencia de Pago')
+                    ->image()
+                    ->directory('payment-evidence')
+                    ->visibility('private')
+                    ->columnSpanFull(),
                 Forms\Components\Textarea::make('description')
                     ->columnSpanFull()
-                    ->disabled(),
+                    ->disabled(!$isAdminOrAccountant()),
                 Forms\Components\TextInput::make('external_payment_id')
                     ->label('Gateway ID')
                     ->disabled(),
                 Forms\Components\TextInput::make('invoice_number')
-                    ->label('Invoice #')
+                    ->label('Factura #')
                     ->disabled(),
             ]);
     }
@@ -60,24 +75,24 @@ class WalletTransactionResource extends Resource
                     ->searchable(),
                 Tables\Columns\TextColumn::make('type')
                     ->badge()
-                    ->color(fn (string $state): string => match ($state) {
+                    ->color(fn(string $state): string => match ($state) {
                         'RECHARGE' => 'success',
                         'CHARGE' => 'danger',
                         'REFUND' => 'warning',
                         default => 'gray',
                     }),
                 Tables\Columns\TextColumn::make('amount')
-                    ->money(fn ($record) => $record->currency)
+                    ->money(fn($record) => $record->currency)
                     ->sortable()
                     ->weight('bold')
-                    ->color(fn ($record) => $record->type === 'RECHARGE' ? 'success' : 'danger'),
+                    ->color(fn($record) => $record->type === 'RECHARGE' ? 'success' : 'danger'),
                 Tables\Columns\TextColumn::make('balance_after')
                     ->label('Balance')
-                    ->money(fn ($record) => $record->currency)
+                    ->money(fn($record) => $record->currency)
                     ->color('gray'),
                 Tables\Columns\TextColumn::make('status')
                     ->badge()
-                    ->color(fn (string $state): string => match ($state) {
+                    ->color(fn(string $state): string => match ($state) {
                         'COMPLETED' => 'success',
                         'PENDING' => 'warning',
                         'FAILED' => 'danger',
@@ -92,6 +107,35 @@ class WalletTransactionResource extends Resource
             ])
             ->actions([
                 Tables\Actions\ViewAction::make(),
+                Tables\Actions\EditAction::make()
+                    ->label('Adjuntar Evidencia'),
+                Tables\Actions\Action::make('validate_payment')
+                    ->label('Validar Pago')
+                    ->icon('heroicon-o-check-circle')
+                    ->color('success')
+                    ->requiresConfirmation()
+                    ->visible(
+                        fn(WalletTransaction $record): bool =>
+                        $record->status === 'PENDING' &&
+                        $record->type === 'RECHARGE' &&
+                        auth()->user()->hasRole(['super_admin', 'system_accountant'])
+                    )
+                    ->action(function (WalletTransaction $record) {
+                        DB::transaction(function () use ($record) {
+                            $wallet = $record->wallet;
+                            $wallet->increment('balance', $record->amount);
+
+                            $record->update([
+                                'status' => 'COMPLETED',
+                                'balance_after' => $wallet->balance,
+                            ]);
+                        });
+
+                        Notification::make()
+                            ->title('Pago Validado')
+                            ->success()
+                            ->send();
+                    }),
             ])
             ->bulkActions([
                 //

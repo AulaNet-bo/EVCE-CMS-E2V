@@ -25,6 +25,9 @@ class ChargingSession extends Model
         'meter_start',
         'meter_stop',
         'total_energy_kwh',
+        'session_fee',
+        'time_fee',
+        'energy_cost',
         'total_cost',
         'utility_cost',
         'margin',
@@ -33,6 +36,9 @@ class ChargingSession extends Model
         'status',
         'stop_reason',
         'current_soc',
+        'item_code',
+        'item_description',
+        'sap_synced_at',
     ];
 
     public function tariff(): BelongsTo
@@ -61,7 +67,7 @@ class ChargingSession extends Model
     {
         return $this->belongsTo(RfidTag::class);
     }
-    
+
     // Relationship to Steve Logs (Cross-Database if configured, or just standard if same DB user)
     // We use transaction_id (CMS) -> transaction_pk (Steve)
     public function meterValues()
