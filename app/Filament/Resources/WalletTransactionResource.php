@@ -99,7 +99,14 @@ class WalletTransactionResource extends Resource
                         default => 'gray',
                     }),
                 Tables\Columns\TextColumn::make('description')
-                    ->limit(30),
+                    ->limit(20),
+                Tables\Columns\TextColumn::make('payment_url')
+                    ->label('Link')
+                    ->limit(10)
+                    ->copyable()
+                    ->copyMessage('Link de pago copiado')
+                    ->color('info')
+                    ->visible(fn($record) => !empty($record->payment_url)),
             ])
             ->defaultSort('created_at', 'desc')
             ->filters([
@@ -136,6 +143,12 @@ class WalletTransactionResource extends Resource
                             ->success()
                             ->send();
                     }),
+                Tables\Actions\Action::make('copy_link')
+                    ->label('Link de Pago')
+                    ->icon('heroicon-o-link')
+                    ->color('info')
+                    ->url(fn($record) => $record->payment_url, true)
+                    ->visible(fn($record) => !empty($record->payment_url)),
             ])
             ->bulkActions([
                 //

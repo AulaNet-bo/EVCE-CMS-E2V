@@ -145,7 +145,6 @@ class WalletController extends Controller
                 'documento' => $request->input('documento') ?: $user->billing_document,
                 'complemento' => $complemento,
                 'doc_type' => $docType,
-                'return_url' => url('/payment-return-app?tx_id=' . ($result['transaction_id'] ?? '')),
             ]
         );
 

@@ -79,14 +79,21 @@ class LibelulaPaymentService
         // La factura se emitirá cuando se recargue energía (consumo), no al recargar saldo a la billetera.
         $canInvoice = false;
 
+        $returnUrl = $invoiceData['return_url'] ?? url('/payment-return-app');
+        if (str_contains($returnUrl, '?')) {
+            $returnUrl .= "&tx_id={$txId}";
+        } else {
+            $returnUrl .= "?tx_id={$txId}";
+        }
+
         $payload = [
             'appkey' => $this->apiKey,
             'email_cliente' => $user->email,
             'identificador' => $localReference,
             'callback_url' => route('api.webhooks.libelula'),
-            'url_retorno' => $invoiceData['return_url'] ?? url('/admin/wallets'),
+            'url_retorno' => $returnUrl,
             'descripcion' => $description,
-            'nombre_cliente' => $invoiceData['razon_social'] ?: $user->name,
+            'nombre_cliente' => ($invoiceData['razon_social'] ?? null) ?: $user->name,
             'moneda' => $wallet->currency ?? 'BOB',
             'monto' => $amount,
             'lineas_detalle_deuda' => [
@@ -130,6 +137,7 @@ class LibelulaPaymentService
 
             $tx = WalletTransaction::find($txId);
             if ($tx) {
+                $update = ['updated_at' => now()];
                 if (Schema::hasColumn('wallet_transactions', 'external_payment_id')) {
                     $update['external_payment_id'] = $data['id'] ?? $data['id_transaccion'] ?? null;
                 }
@@ -139,12 +147,25 @@ class LibelulaPaymentService
                 $tx->update($update);
             }
 
+            if ($resp->successful() && (int) ($data['error'] ?? 1) === 0) {
+                $paymentUrl = $data['url_pasarela_pagos'] ?? null;
+                
+                // Update the transaction with the payment URL
+                DB::table('wallet_transactions')
+                    ->where('id', $txId)
+                    ->update(['payment_url' => $paymentUrl]);
+
+                return [
+                    'success' => true,
+                    'transaction_id' => $txId,
+                    'payment_url' => $paymentUrl,
+                    'qr_image' => $data['qr_generado'] ?? null,
+                ];
+            }
+
             return [
-                'success' => true,
-                'transaction_id' => $txId,
-                'payment_url' => $data['url_pasarela_pagos'] ?? null,
-                'qr_image' => $data['qr_simple_url'] ?? null,
-                'raw' => $data,
+                'success' => false,
+                'message' => 'Error inesperado al procesar respuesta de Libélula',
             ];
         } catch (\Throwable $e) {
             $this->markFailed($txId, ['exception' => $e->getMessage()]);
