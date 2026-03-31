@@ -17,6 +17,8 @@ use Filament\Pages\Page;
 use Filament\Forms\Components\Actions;
 use Filament\Forms\Components\Actions\Action as FormAction;
 use Filament\Actions\Action;
+use App\Models\Wallet;
+use App\Services\LibelulaPaymentService;
 
 class ManageSettings extends Page
 {
@@ -101,6 +103,20 @@ class ManageSettings extends Page
                             ])
                             ->searchable(),
                     ])->columns(2),
+                
+                Section::make('Pasarela de Pagos (Libélula)')
+                    ->description('Administre las credenciales de la pasarela de pagos.')
+                    ->schema([
+                        TextInput::make('libelula_app_key')
+                            ->label('Libelula App Key')
+                            ->password()
+                            ->revealable()
+                            ->helperText('Pegue aquí la clave proporcionada por Libélula.'),
+                        TextInput::make('libelula_api_url')
+                            ->label('URL de la API')
+                            ->placeholder('https://api.libelula.bo/rest')
+                            ->helperText('Por defecto: https://api.libelula.bo/rest'),
+                    ])->columns(2),
             ])
             ->statePath('data');
     }
@@ -112,6 +128,60 @@ class ManageSettings extends Page
                 ->label('Guardar Cambios')
                 ->submit('save'),
         ];
+    }
+
+    protected function getHeaderActions(): array
+    {
+        return [
+            Action::make('test_libelula')
+                ->label('Probar Libélula')
+                ->icon('heroicon-o-bug-ant')
+                ->color('warning')
+                ->requiresConfirmation()
+                ->modalHeading('Diagnóstico de Conexión Libélula')
+                ->modalDescription('Se enviará una solicitud de cobro de Bs 1 para verificar que la configuración sea correcta. No se generará ningún cargo real.')
+                ->action(fn () => $this->runLibelulaTest()),
+        ];
+    }
+
+    public function runLibelulaTest(): void
+    {
+        $wallet = Wallet::first();
+        
+        if (!$wallet) {
+            Notification::make()
+                ->title('Error de prueba')
+                ->body('No hay billeteras de usuario en el sistema para realizar el test.')
+                ->danger()
+                ->send();
+            return;
+        }
+
+        // Usamos el servicio pero inyectando los datos actuales del formulario (aunque no se hayan guardado)
+        // O simplemente los guardados si el usuario ya los salvó.
+        $service = app(LibelulaPaymentService::class);
+        $result = $service->createPayment($wallet, 1.00, 'Test de Diagnóstico CMS');
+
+        if ($result['success']) {
+            Notification::make()
+                ->title('Conexión Exitosa')
+                ->body('Libélula respondió correctamente. URL generada: ' . $result['payment_url'])
+                ->success()
+                ->persistent()
+                ->actions([
+                    \Filament\Notifications\Actions\Action::make('view')
+                        ->label('Ver URL')
+                        ->url($result['payment_url'], true),
+                ])
+                ->send();
+        } else {
+            Notification::make()
+                ->title('Falla en la Conexión')
+                ->body('Detalle: ' . ($result['detail'] ?? 'Error desconocido'))
+                ->danger()
+                ->persistent()
+                ->send();
+        }
     }
 
     public function save(): void

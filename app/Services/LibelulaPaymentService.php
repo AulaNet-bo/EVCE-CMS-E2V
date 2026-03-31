@@ -16,8 +16,10 @@ class LibelulaPaymentService
 
     public function __construct()
     {
-        $this->baseUrl = rtrim(env('LIBELULA_API_URL', 'https://api.libelula.bo/rest'), '/');
-        $this->apiKey = (string) env('LIBELULA_APP_KEY', '');
+        $settings = \App\Models\SystemSetting::get();
+        
+        $this->baseUrl = rtrim($settings->libelula_api_url ?: env('LIBELULA_API_URL', 'https://api.libelula.bo/rest'), '/');
+        $this->apiKey = (string) ($settings->libelula_app_key ?: env('LIBELULA_APP_KEY', ''));
     }
 
     public function isConfigured(): bool

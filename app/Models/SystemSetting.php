@@ -19,6 +19,8 @@ class SystemSetting extends Model
         'button_color',
         'text_color',
         'font_family',
+        'libelula_app_key',
+        'libelula_api_url',
     ];
 
     protected $casts = [
