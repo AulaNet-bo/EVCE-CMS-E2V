@@ -107,6 +107,11 @@ class WalletTransactionResource extends Resource
                     ->copyMessage('Link de pago copiado')
                     ->color('info')
                     ->visible(fn($record) => !empty($record->payment_url)),
+                Tables\Columns\TextColumn::make('payment_method')
+                    ->label('Método')
+                    ->badge()
+                    ->color('gray')
+                    ->searchable(),
             ])
             ->defaultSort('created_at', 'desc')
             ->filters([
