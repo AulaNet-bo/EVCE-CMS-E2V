@@ -7,8 +7,7 @@ use App\Http\Controllers\Api\V1\Mobile\StationController;
 use App\Http\Controllers\Api\V1\Mobile\ChargingSessionController;
 use App\Http\Controllers\Api\V1\Mobile\WalletController;
 use App\Http\Controllers\Api\V1\Mobile\NotificationController;
-
-use App\Http\Controllers\Api\V1\SAP\SAPController;
+use App\Http\Controllers\Api\V1\Sap\SapExportController;
 
 /*
 |--------------------------------------------------------------------------
@@ -61,8 +60,7 @@ Route::prefix('v1/mobile')->group(function () {
 });
 
 // --- SAP INTEGRATION API (V1) ---
-// Secured with dedicated API Tokens or Auth middleware
 Route::prefix('v1/sap')->middleware('auth:sanctum')->group(function () {
-    Route::get('/export', [SAPController::class, 'exportData']);
-    Route::post('/sync', [SAPController::class, 'markSynced']);
+    Route::get('/export', [SapExportController::class, 'exportData']);
+    Route::post('/sync', [SapExportController::class, 'markSynced']);
 });

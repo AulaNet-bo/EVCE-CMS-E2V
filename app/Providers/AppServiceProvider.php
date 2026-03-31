@@ -27,6 +27,7 @@ class AppServiceProvider extends ServiceProvider
 
         RfidTag::observe(RfidTagObserver::class);
         \App\Models\Promotion::observe(\App\Observers\PromotionObserver::class);
+        \App\Models\WalletTransaction::observe(\App\Observers\WalletTransactionObserver::class);
 
         \Illuminate\Support\Facades\Gate::before(function ($user, $ability) {
             return $user->hasRole('super_admin') ? true : null;

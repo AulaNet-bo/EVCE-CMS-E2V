@@ -66,8 +66,8 @@ class WalletController extends Controller
                 'wallet_id' => $wallet->id,
                 'type' => 'RECHARGE',
                 'amount' => $amount,
-                $refCol => $request->input('reference') ?: ('APP-TOPUP-' . now()->format('YmdHis')),
-                'description' => $request->input('description', 'Top-up desde app móvil'),
+                $refCol => $request->input('reference') ?: ('APP-RECHARGE-' . now()->format('YmdHis')),
+                'description' => $request->input('description', 'Recarga desde app móvil'),
                 'created_at' => now(),
                 'updated_at' => now(),
             ];

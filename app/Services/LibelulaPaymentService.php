@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Wallet;
+use App\Models\WalletTransaction;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -48,6 +49,7 @@ class LibelulaPaymentService
                 'amount' => $amount,
                 $refCol => 'LIBELULA-PENDING-' . now()->format('YmdHis') . '-' . random_int(1000, 9999),
                 'description' => $description,
+                'payment_method' => 'LIBELULA',
                 'created_at' => now(),
                 'updated_at' => now(),
             ];
@@ -124,14 +126,16 @@ class LibelulaPaymentService
                 'updated_at' => now(),
             ];
 
-            if (Schema::hasColumn('wallet_transactions', 'metadata')) {
-                $update['metadata'] = json_encode(['register_response' => $data]);
+            $tx = WalletTransaction::find($txId);
+            if ($tx) {
+                if (Schema::hasColumn('wallet_transactions', 'external_payment_id')) {
+                    $update['external_payment_id'] = $data['id'] ?? $data['id_transaccion'] ?? null;
+                }
+                if (Schema::hasColumn('wallet_transactions', 'invoice_url')) {
+                    $update['invoice_url'] = $data['url_pasarela_pagos'] ?? null;
+                }
+                $tx->update($update);
             }
-            if (Schema::hasColumn('wallet_transactions', 'external_payment_id')) {
-                $update['external_payment_id'] = $data['id_transaccion'] ?? null;
-            }
-
-            DB::table('wallet_transactions')->where('id', $txId)->update($update);
 
             return [
                 'success' => true,
@@ -215,7 +219,14 @@ class LibelulaPaymentService
                 'updated_at' => now(),
             ]);
 
+            $method = $payload['metodo_pago'] 
+                ?? $payload['medio_pago'] 
+                ?? $payload['tipo_pago'] 
+                ?? $payload['glosa_metodo_pago'] 
+                ?? 'LIBELULA';
+
             $update = [
+                'payment_method' => strtoupper((string) $method),
                 'updated_at' => now(),
             ];
 

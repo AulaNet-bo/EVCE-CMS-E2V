@@ -1,0 +1,86 @@
+EXPLICACIÓN DE INTEGRACIÓN: PLATAFORMA E2V - PASARELA LIBÉLULA
+
+Estimados, comparto con ustedes el detalle de cómo mi plataforma (E2V) está gestionando la integración con los servicios de Libélula. Esta explicación cubre tanto el inicio de la transacción como la recepción de las notificaciones de pago (webhooks).
+
+---
+
+1. FLUJO DE INICIO: REGISTRO DE TRANSACCIÓN (OUTGOING)
+
+Cuando un usuario elige recargar su billetera móvil (Wallet), mi servidor realiza una petición POST hacia el endpoint de registro de deuda de Libélula. En esta petición, enviamos los datos del cliente, el monto y, lo más importante, un 'identificador' único generado por nuestro sistema.
+
+CÓDIGO DE MI LADO:
+------------------
+// Función en el servicio 'LibelulaPaymentService'
+public function createPayment($wallet, $amount, $description)
+{
+    // Construimos el payload siguiendo su documentación
+    $payload = [
+        'appkey' => 'TU_API_KEY',
+        'email_cliente' => $user->email,
+        'identificador' => 'REF-UNICA-123', // Referencia interna de E2V
+        'callback_url' => 'https://e2v.evbol.com/api/webhooks/libelula', // Nuestra URL de escucha
+        'nombre_cliente' => $user->name,
+        'moneda' => 'BOB',
+        'monto' => $amount,
+        'lineas_detalle_deuda' => [
+            [
+                'concepto' => $description,
+                'cantidad' => 1,
+                'costo_unitario' => $amount,
+            ],
+        ],
+    ];
+
+    // Enviamos la petición y esperamos la respuesta con el QR o URL de pago
+    $resp = Http::post("https://api.libelula.bo/rest/deuda/registrar", $payload);
+    return $resp->json();
+}
+------------------
+
+---
+
+2. FLUJO DE RESPUESTA: PROCESAMIENTO DEL WEBHOOK (INCOMING)
+
+Una vez que el cliente completa el pago (ya sea por QR o Tarjeta), su sistema envía una notificación automática (Webhook) a nuestra URL especificada. Mi servidor procesa esta notificación de la siguiente manera:
+
+A. Escucha el Webhook: 
+Nuestro 'WebhookController' recibe el JSON completo enviado por ustedes. Registramos el log de auditoría para asegurar que el pago fue notificado.
+
+B. Mapeo de Transacción:
+Buscamos en nuestra base de datos el registro que coincida con el campo 'identificador' recibido en su notificación.
+
+C. Validación y Acreditación:
+Verificamos el estado enviado (ej. 'PAGADO', 'PAID'). Si es positivo, procedemos a:
+- Incrementar el saldo real en la billetera del usuario.
+- Guardar el campo 'medio_pago' (o similar) que ustedes nos envían, para saber si fue QR o Tarjeta.
+- Marcar la transacción como 'COMPLETED'.
+
+CÓDIGO DE MI LADO:
+------------------
+public function handleWebhook(array $data)
+{
+    // Localizamos la transacción pendiente enviada originalmente
+    $tx = WalletTransaction::where('reference_id', $data['identificador'])->first();
+
+    // Verificamos el éxito del pago
+    $status = strtoupper($data['estado'] ?? '');
+    if ($status === 'PAGADO' || $status === 'PAID') {
+        
+        // Acreditamos saldo al usuario
+        $this->markCompleted($tx->id, $data);
+        
+        // Respondemos a Libélula indicando éxito para evitar reintentos duplicados
+        return response()->json(['status' => 0, 'message' => 'OK']);
+    }
+}
+------------------
+
+3. RESUMEN DE CAMPOS REQUERIDOS EN EL WEBHOOK
+
+Para que nuestra integración funcione sin errores, es fundamental que en la respuesta que su servidor nos envía, se incluyan los siguientes parámetros:
+- 'identificador': Para localizar la deuda en nuestra base de datos.
+- 'estado': Para saber si el pago fue aprobado/procesado.
+- 'medio_pago' o 'metodo_pago': Para nuestra auditoría contable SAP.
+- 'id_transaccion' (Libélula): Para trazabilidad cruzada.
+
+Cualquier duda técnica pueden contactarnos directamente. Quedamos a la espera de sus comentarios.
