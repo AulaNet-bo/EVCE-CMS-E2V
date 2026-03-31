@@ -72,6 +72,10 @@ class WalletTransactionResource extends Resource
                     ->dateTime('d M H:i')
                     ->sortable(),
                 Tables\Columns\TextColumn::make('user.name')
+                    ->label('Usuario')
+                    ->searchable(),
+                Tables\Columns\TextColumn::make('user.billing_document')
+                    ->label('NIT/CI')
                     ->searchable(),
                 Tables\Columns\TextColumn::make('type')
                     ->badge()
@@ -105,8 +109,7 @@ class WalletTransactionResource extends Resource
                     ->limit(10)
                     ->copyable()
                     ->copyMessage('Link de pago copiado')
-                    ->color('info')
-                    ->visible(fn($record) => !empty($record->payment_url)),
+                    ->color('info'),
                 Tables\Columns\TextColumn::make('payment_method')
                     ->label('Método')
                     ->badge()

@@ -47,6 +47,7 @@ class LibelulaPaymentService
         $txId = DB::transaction(function () use ($wallet, $user, $amount, $description, $refCol, $statusCol, $currencyCol, $balanceAfterCol, $invoiceData) {
             $insert = [
                 'wallet_id' => $wallet->id,
+                'user_id' => $user->id,
                 'type' => 'RECHARGE',
                 'amount' => $amount,
                 $refCol => 'LIBELULA-PENDING-' . now()->format('YmdHis') . '-' . random_int(1000, 9999),
@@ -242,10 +243,12 @@ class LibelulaPaymentService
                 'updated_at' => now(),
             ]);
 
-            $method = $payload['metodo_pago'] 
+            $method = $payload['payment_method']
+                ?? $payload['metodo_pago'] 
                 ?? $payload['medio_pago'] 
                 ?? $payload['tipo_pago'] 
                 ?? $payload['glosa_metodo_pago'] 
+                ?? $payload['glosa_pago']
                 ?? 'LIBELULA';
 
             $update = [
