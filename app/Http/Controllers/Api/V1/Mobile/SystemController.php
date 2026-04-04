@@ -61,7 +61,11 @@ class SystemController extends Controller
                     'image_url' => $p->image_path ? asset('storage/' . $p->image_path) : null,
                     'type' => $p->type,
                     'frequency' => $p->frequency,
-                ])
+                ]),
+                'policies' => [
+                    'invoicing_policy' => $settings->invoicing_policy ?? 'recharge',
+                    'nit_requirement_policy' => $settings->nit_requirement_policy ?? 'optional',
+                ],
             ]
         ]);
     }

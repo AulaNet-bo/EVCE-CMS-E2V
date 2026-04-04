@@ -36,12 +36,17 @@ class SapExportService
             $query->whereNull('sap_synced_at');
         }
 
+        $policy = \App\Models\SystemSetting::get()->invoicing_policy ?? 'recharge';
+
         return $query->where('type', 'RECHARGE')
             ->where('status', 'COMPLETED')
             ->get()
-            ->map(function ($tx) {
+            ->map(function ($tx) use ($policy) {
                 $user = $tx->user ?? ($tx->wallet->user ?? null);
                 
+                // Label for SAP based on policy
+                $label = ($policy === 'recharge') ? 'RECARGA_OFICIAL' : 'ANTICIPO_CLIENTE';
+
                 return [
                     'sap_client_code' => $user?->billing_document ?: 'not registered',
                     'customer_name' => $user?->name ?? 'Unknown',
@@ -54,6 +59,7 @@ class SapExportService
                     'pos_correlative' => $tx->pos_correlative,
                     'external_id_pos' => $tx->external_payment_id,
                     'internal_ref' => $tx->id,
+                    'transaction_type_label' => $label,
                 ];
             });
     }
@@ -65,9 +71,11 @@ class SapExportService
             $query->whereNull('sap_synced_at');
         }
 
+        $policy = \App\Models\SystemSetting::get()->invoicing_policy ?? 'recharge';
+
         return $query->where('status', 'COMPLETED')
             ->get()
-            ->map(function ($session) {
+            ->map(function ($session) use ($policy) {
                 $startTime = $session->start_time;
                 if ($startTime && !($startTime instanceof Carbon)) {
                     $startTime = Carbon::parse($startTime);
@@ -77,6 +85,9 @@ class SapExportService
                 if ($stopTime && !($stopTime instanceof Carbon)) {
                     $stopTime = Carbon::parse($stopTime);
                 }
+
+                // Label for SAP based on policy
+                $label = ($policy === 'usage') ? 'FACTURA_ENERGIA' : 'CONSUMO_INTERNO';
 
                 return [
                     'sap_client_code' => $session->user->billing_document ?? 'not registered',
@@ -93,6 +104,7 @@ class SapExportService
                     'total_amount' => (float) $session->total_cost,
                     'currency' => $session->currency,
                     'internal_ref' => $session->id,
+                    'transaction_type_label' => $label,
                 ];
             });
     }

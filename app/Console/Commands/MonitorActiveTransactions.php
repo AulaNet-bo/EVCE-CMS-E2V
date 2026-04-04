@@ -190,7 +190,23 @@ class MonitorActiveTransactions extends Command
                             $insert[$statusCol] = 'COMPLETED';
                         }
 
-                        DB::table('wallet_transactions')->insert($insert);
+                        $newTxId = DB::table('wallet_transactions')->insertGetId($insert);
+
+                        // Trigger Libélula Invoice if policy is usage
+                        $policy = \App\Models\SystemSetting::get()->invoicing_policy ?? 'recharge';
+                        if ($policy === 'usage') {
+                            try {
+                                $fullTx = \App\Models\WalletTransaction::find($newTxId);
+                                $libService = app(\App\Services\LibelulaPaymentService::class);
+                                // Note: In a production scenario, we'd pass 'canal_caja' info to mark it as paid.
+                                $libService->createPayment($wallet, $cost, "Consumo Energia #{$txId}", [
+                                    'emite_factura' => true,
+                                    'internal_usage_tx' => true 
+                                ]);
+                            } catch (\Exception $ex) {
+                                Log::error("Failed to trigger consumption invoice for Tx #{$txId}", ['error' => $ex->getMessage()]);
+                            }
+                        }
 
                         $this->info("   💰 Deducted {$cost} {$currency} from Wallet User: {$userId} (New Balance: {$wallet->balance})");
                     } else {

@@ -21,6 +21,8 @@ class SystemSetting extends Model
         'font_family',
         'libelula_app_key',
         'libelula_api_url',
+        'invoicing_policy',
+        'nit_requirement_policy',
     ];
 
     protected $casts = [

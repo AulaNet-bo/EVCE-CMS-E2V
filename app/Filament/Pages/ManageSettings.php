@@ -117,6 +117,28 @@ class ManageSettings extends Page
                             ->placeholder('https://api.libelula.bo/rest')
                             ->helperText('Por defecto: https://api.libelula.bo/rest'),
                     ])->columns(2),
+
+                Section::make('Políticas de Negocio y Facturación (SIAT)')
+                    ->description('Defina cómo y cuándo se generan los documentos tributarios.')
+                    ->schema([
+                        Select::make('invoicing_policy')
+                            ->label('Momento de Facturacion')
+                            ->options([
+                                'recharge' => 'Al Recargar Saldo (Wallet Topup)',
+                                'usage' => 'Al Consumir Energía (Final de Carga)',
+                            ])
+                            ->required()
+                            ->helperText('Define si Libélula emite la factura en el pago o al finalizar la carga de energía.'),
+                        
+                        Select::make('nit_requirement_policy')
+                            ->label('Política de Acceso a la App')
+                            ->options([
+                                'optional' => 'Opcional (Permitir uso sin NIT/CI)',
+                                'required' => 'Obligatorio (Exigir NIT/CI para usar la App)',
+                            ])
+                            ->required()
+                            ->helperText('Si es obligatorio, los usuarios sin NIT/CI verán un bloqueo en la App hasta registrar sus datos.'),
+                    ])->columns(2),
             ])
             ->statePath('data');
     }

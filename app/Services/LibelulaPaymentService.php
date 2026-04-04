@@ -77,8 +77,8 @@ class LibelulaPaymentService
 
         DB::table('wallet_transactions')->where('id', $txId)->update([$refCol => $localReference]);
 
-        // La factura se emitirá cuando se recargue energía (consumo), no al recargar saldo a la billetera.
-        $canInvoice = false;
+        $invoicingPolicy = \App\Models\SystemSetting::get()->invoicing_policy ?: 'recharge';
+        $canInvoice = ($invoicingPolicy === 'recharge');
 
         $returnUrl = $invoiceData['return_url'] ?? url('/payment-return-app');
         if (str_contains($returnUrl, '?')) {
@@ -106,7 +106,7 @@ class LibelulaPaymentService
                     'detalle' => $description,
                 ],
             ],
-            // Emit invoice when billing fields are present.
+            // Emit invoice when billing fields are present and policy is recharge.
             'emite_factura' => $canInvoice,
         ];
 
@@ -252,7 +252,7 @@ class LibelulaPaymentService
                 ?? 'LIBELULA';
 
             $update = [
-                'payment_method' => strtoupper((string) $method),
+                'payment_method' => 'LIBELULA/' . strtoupper((string) $method),
                 'updated_at' => now(),
             ];
 
