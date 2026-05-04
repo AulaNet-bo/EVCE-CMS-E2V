@@ -4,6 +4,7 @@ namespace App\Filament\Resources;
 
 use App\Filament\Resources\StationResource\Pages;
 use App\Filament\Resources\StationResource\RelationManagers;
+use App\Filament\Pages\DispenserQrGenerator;
 use App\Models\Station;
 use Filament\Forms;
 use Filament\Forms\Form;
@@ -91,6 +92,11 @@ class StationResource extends Resource
             ])
             ->actions([
                 Tables\Actions\EditAction::make(),
+                Tables\Actions\Action::make('view_qr')
+                    ->label('QR Codes')
+                    ->icon('heroicon-o-qr-code')
+                    ->color('info')
+                    ->url(fn (Station $record): string => DispenserQrGenerator::getUrl(['data' => ['station_id' => $record->id]])),
             ]);
     }
 
