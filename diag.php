@@ -1,29 +1,16 @@
 <?php
-$results = [];
+use App\Models\Station;
+use Illuminate\Support\Facades\DB;
 
-// 1. Connection check
-$start = microtime(true);
-try {
-    $pdo = new PDO('mysql:host=host.docker.internal;port=3306;dbname=stevedb', 'steve', 'changeme');
-    $results['pdo_connect'] = (microtime(true) - $start) . 's';
-} catch (Exception $e) {
-    $results['pdo_connect_error'] = $e->getMessage();
+echo "--- STATIONS TABLE ---\n";
+$stations = DB::table('stations')->get();
+foreach ($stations as $s) {
+    echo "ID: " . $s->id . " | charge_box_id: " . ($s->charge_box_id ?? 'N/A') . " | name: " . ($s->name ?? 'N/A') . "\n";
 }
 
-// 2. Query check
-$start = microtime(true);
-$pdo->query('SELECT 1');
-$results['simple_query'] = (microtime(true) - $start) . 's';
-
-// 3. Redis check
-$start = microtime(true);
-try {
-    $redis = new Redis();
-    $redis->connect('redis', 6379);
-    $redis->ping();
-    $results['redis_ping'] = (microtime(true) - $start) . 's';
-} catch (Exception $e) {
-    $results['redis_error'] = $e->getMessage();
+$sim = Station::where('charge_box_id', 'SimulatedCP001')->first();
+if ($sim) {
+    echo "SimulatedCP001 FOUND with ID: " . $sim->id . "\n";
+} else {
+    echo "SimulatedCP001 NOT FOUND\n";
 }
-
-print_r($results);

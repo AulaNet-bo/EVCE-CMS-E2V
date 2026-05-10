@@ -15,13 +15,19 @@ class RfidTag extends Model
         'user_id',
         'company_id',
         'name',
+        'balance',
+        'currency',
         'is_active',
         'expires_at',
+        'product_id',
+        'is_virtual',
     ];
 
     protected $casts = [
         'expires_at' => 'date',
         'is_active' => 'boolean',
+        'is_virtual' => 'boolean',
+        'balance' => 'decimal:2',
     ];
 
     public function user(): BelongsTo
@@ -32,5 +38,23 @@ class RfidTag extends Model
     public function company(): BelongsTo
     {
         return $this->belongsTo(Company::class);
+    }
+
+    public function product(): BelongsTo
+    {
+        return $this->belongsTo(Product::class);
+    }
+
+    protected function balance(): \Illuminate\Database\Eloquent\Casts\Attribute
+    {
+        return \Illuminate\Database\Eloquent\Casts\Attribute::make(
+            get: function ($value) {
+                if ($this->is_virtual) {
+                    // Load wallet balance directly to avoid recursion or relationship issues
+                    return (float) (\App\Models\Wallet::where('user_id', $this->user_id)->value('balance') ?? 0);
+                }
+                return (float) $value;
+            },
+        );
     }
 }

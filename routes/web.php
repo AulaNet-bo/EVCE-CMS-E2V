@@ -16,3 +16,12 @@ Route::get('/payment-return-app', function (Illuminate\Http\Request $request) {
 });
 
 Route::get('/disclaimer', [App\Http\Controllers\DisclaimerController::class, 'index'])->name('public.disclaimer');
+
+// REMOTE CONTROL EMERGENCY PAGE
+Route::get('/remote/login', [App\Http\Controllers\RemoteControlController::class, 'showLogin'])->name('remote.login');
+Route::post('/remote/login', [App\Http\Controllers\RemoteControlController::class, 'login'])->name('remote.login.post');
+Route::get('/remote/logout', [App\Http\Controllers\RemoteControlController::class, 'logout'])->name('remote.logout');
+
+Route::get('/remote/control', [App\Http\Controllers\RemoteControlController::class, 'index'])->name('remote.index');
+Route::post('/remote/start/{station}', [App\Http\Controllers\RemoteControlController::class, 'start'])->name('remote.start');
+Route::post('/remote/stop/{station}', [App\Http\Controllers\RemoteControlController::class, 'stop'])->name('remote.stop');

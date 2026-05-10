@@ -23,15 +23,20 @@ class AdminPanelProvider extends PanelProvider
 {
     public function panel(Panel $panel): Panel
     {
-        $settings = \App\Models\SystemSetting::get();
+        $settings = null;
+        try {
+            $settings = \App\Models\SystemSetting::first();
+        } catch (\Exception $e) {
+            // Safe fallback if DB is not migrated yet
+        }
 
         return $panel
             ->default()
             ->id('admin')
             ->path('admin')
             ->login()
-            ->brandName($settings->platform_name)
-            ->brandLogo($settings->logo_path ? asset('storage/' . $settings->logo_path) : null)
+            ->brandName($settings->platform_name ?? 'EVCE Platform')
+            ->brandLogo(isset($settings->logo_path) ? asset('storage/' . $settings->logo_path) : null)
             ->colors([
                 'primary' => $settings->primary_color ?? '#0076D6',
             ])

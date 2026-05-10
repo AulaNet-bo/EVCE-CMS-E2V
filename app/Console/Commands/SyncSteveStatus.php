@@ -27,7 +27,7 @@ class SyncSteveStatus extends Command
     /**
      * Execute the console command.
      */
-    public function handle(SteveDataSource $source)
+    public function handle(SteveDataSource $source, \App\Services\SteveService $steveService)
     {
         $this->info("Starting synchronization with Steve OCPP Server ({$source->source()})...");
 
@@ -37,39 +37,38 @@ class SyncSteveStatus extends Command
             $this->info("Found " . $steveConnectors->count() . " connectors in Steve source.");
 
             foreach ($steveConnectors as $sConnector) {
-                $status = $sConnector->status ?? 'Unknown';
+                // Normalize status with heartbeat check
+                $status = $steveService->normalizeStatusWithHeartbeat(
+                    $sConnector->status ?? 'Unknown',
+                    $sConnector->last_heartbeat_timestamp
+                );
 
                 // Find or Create Station in CMS
-                $station = Station::firstOrCreate(
+                $station = Station::updateOrCreate(
                     ['charge_box_id' => $sConnector->charge_box_id],
                     [
                         'name' => 'Station ' . $sConnector->charge_box_id,
                         'is_active' => true,
+                        'last_heartbeat' => $sConnector->last_heartbeat_timestamp
                     ]
                 );
 
-                // Update Heartbeat
-                if ($sConnector->last_heartbeat_timestamp) {
-                    $station->last_heartbeat = $sConnector->last_heartbeat_timestamp;
-                }
-
-                // Automatic Tariff Assignment
-                // Logic: Pick the latest valid tariff (where now is between valid_from and valid_until)
-                $now = now();
-                $activeTariff = \App\Models\Tariff::where(function ($query) use ($now) {
-                    $query->whereNull('valid_from')->orWhere('valid_from', '<=', $now);
-                })
-                    ->where(function ($query) use ($now) {
-                        $query->whereNull('valid_until')->orWhere('valid_until', '>=', $now);
+                // Automatic Tariff Assignment (Only if not set)
+                if (!$station->tariff_id) {
+                    $now = now();
+                    $activeTariff = \App\Models\Tariff::where(function ($query) use ($now) {
+                        $query->whereNull('valid_from')->orWhere('valid_from', '<=', $now);
                     })
-                    ->orderBy('created_at', 'desc')
-                    ->first();
+                        ->where(function ($query) use ($now) {
+                            $query->whereNull('valid_until')->orWhere('valid_until', '>=', $now);
+                        })
+                        ->orderBy('created_at', 'desc')
+                        ->first();
 
-                if ($activeTariff) {
-                    $station->tariff_id = $activeTariff->id;
+                    if ($activeTariff) {
+                        $station->update(['tariff_id' => $activeTariff->id]);
+                    }
                 }
-
-                $station->save();
 
                 // Sync Connector Status
                 $connector = Connector::updateOrCreate(
@@ -79,11 +78,25 @@ class SyncSteveStatus extends Command
                     ],
                     [
                         'status' => $status,
-                        'connector_pk' => $sConnector->connector_pk // Save PK for easier lookups later if needed
+                        'connector_pk' => $sConnector->connector_pk
                     ]
                 );
 
                 $this->line("Synced: {$station->charge_box_id} - Conn {$connector->connector_id} -> {$status}");
+
+                // --- Real-time Sync to Firebase ---
+                try {
+                    \App\Services\FirebaseService::syncStationData($station->charge_box_id, [
+                        'status' => $status,
+                        'connectors' => [
+                            (string)$connector->connector_id => [
+                                'status' => $status
+                            ]
+                        ]
+                    ]);
+                } catch (\Throwable $e) {
+                    // Silently fail or log for Firebase
+                }
             }
 
             $this->info("Synchronization complete!");

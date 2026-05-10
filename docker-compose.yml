@@ -10,11 +10,13 @@ services:
     volumes:
       - .:/app
     networks:
-      - default
-      - steve-java_default
+      default:
+      steve-java_default:
+      prod_network:
+        ipv4_address: 192.168.0.4
     ports:
-      - "8000:8000"
-    command: /bin/bash -c "php artisan serve --host=0.0.0.0 --port=8000"
+      - "8080:8080"
+    command: /bin/bash -c "php artisan serve --host=0.0.0.0 --port=8080"
 
   steve-cms-redis:
     image: redis:alpine
@@ -34,4 +36,6 @@ networks:
   default:
     name: steve-cms_default
   steve-java_default:
+    external: true
+  prod_network:
     external: true

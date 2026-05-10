@@ -18,12 +18,32 @@ class AuthController extends Controller
 {
     public function register(Request $request)
     {
+        // Trim email to handle accidental spaces (e.g. "user@ gmail.com" or "user@gmail.com ")
+        if ($request->has('email')) {
+            $request->merge([
+                'email' => str_replace(' ', '', $request->email)
+            ]);
+        }
+
         $request->validate([
-            'name' => 'required|string|max:255',
+            'name' => ['required', 'string', 'max:255', 'regex:/^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s]+$/u'],
             'email' => 'required|string|email|max:255|unique:users',
             'password' => 'required|string|min:8',
-            // Optional device NFC identifier (when available on device/platform)
             'nfc_id' => 'nullable|string|max:255',
+            'billing_document' => 'sometimes|nullable|numeric|digits_between:5,15|unique:users',
+            'billing_razon_social' => 'sometimes|nullable|string|max:255',
+            'billing_doc_type' => 'sometimes|nullable|in:CI,NIT',
+        ], [
+            'name.required' => 'El nombre es obligatorio.',
+            'name.regex' => 'El nombre solo debe contener letras y espacios.',
+            'email.required' => 'El correo electrónico es obligatorio.',
+            'email.email' => 'Ingresa un formato de correo válido (ej: usuario@correo.com).',
+            'email.unique' => 'Este correo ya está registrado en el sistema.',
+            'password.required' => 'La contraseña es obligatoria.',
+            'password.min' => 'La contraseña es muy corta, debe tener al menos 8 caracteres.',
+            'billing_document.numeric' => 'El NIT/CI debe contener únicamente números.',
+            'billing_document.digits_between' => 'El NIT/CI debe tener entre 5 y 15 dígitos.',
+            'billing_document.unique' => 'Este NIT/CI ya está registrado por otro usuario.',
         ]);
 
         $result = DB::transaction(function () use ($request) {
@@ -31,6 +51,9 @@ class AuthController extends Controller
                 'name' => $request->name,
                 'email' => $request->email,
                 'password' => Hash::make($request->password),
+                'billing_document' => $request->billing_document,
+                'billing_razon_social' => $request->billing_razon_social,
+                'billing_doc_type' => $request->billing_doc_type ?: 'NIT',
             ]);
 
             // Ensure mobile default role exists and assign it
@@ -46,19 +69,23 @@ class AuthController extends Controller
             if ($rawTag) {
                 $tagCode = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', $rawTag));
             } else {
-                $tagCode = 'APP' . strtoupper(Str::random(10));
+                $tagCode = 'A' . strtoupper(Str::random(7));
             }
 
             // Guarantee uniqueness
             while (RfidTag::where('tag_code', $tagCode)->exists()) {
-                $tagCode = 'APP' . strtoupper(Str::random(10));
+                $tagCode = 'A' . strtoupper(Str::random(7));
             }
+
+            $virtualProduct = Product::where('internal_code', 'VIRTUAL-TAG')->first();
 
             $tag = RfidTag::create([
                 'tag_code' => $tagCode,
                 'user_id' => $user->id,
-                'name' => 'Mobile Tag',
+                'product_id' => $virtualProduct?->id,
+                'name' => 'Tag Virtual App',
                 'is_active' => true,
+                'is_virtual' => true,
             ]);
 
             $token = $user->createToken('mobile-app')->plainTextToken;
@@ -67,7 +94,7 @@ class AuthController extends Controller
         });
 
         return response()->json([
-            'message' => 'User registered successfully',
+            'message' => 'Usuario registrado exitosamente',
             'user' => $result['user'],
             'wallet' => $result['wallet'],
             'rfid_tag' => $result['tag'],
@@ -93,7 +120,7 @@ class AuthController extends Controller
         $token = $user->createToken('mobile-app')->plainTextToken;
 
         return response()->json([
-            'message' => 'Login successful',
+            'message' => 'Inicio de sesión exitoso',
             'user' => $user,
             'token' => $token,
         ]);
@@ -111,7 +138,7 @@ class AuthController extends Controller
         $response = Http::get("https://oauth2.googleapis.com/tokeninfo?id_token={$idToken}");
 
         if ($response->failed()) {
-            return response()->json(['message' => 'Invalid Google Token'], 401);
+            return response()->json(['message' => 'Token de Google inválido'], 401);
         }
 
         $payload = $response->json();
@@ -143,9 +170,9 @@ class AuthController extends Controller
                     ['balance' => 0, 'currency' => 'BOB', 'is_postpaid' => false]
                 );
 
-                $tagCode = 'APP' . strtoupper(Str::random(10));
+                $tagCode = 'A' . strtoupper(Str::random(7));
                 while (RfidTag::where('tag_code', $tagCode)->exists()) {
-                    $tagCode = 'APP' . strtoupper(Str::random(10));
+                    $tagCode = 'A' . strtoupper(Str::random(7));
                 }
 
                 RfidTag::create([
@@ -162,7 +189,7 @@ class AuthController extends Controller
         $token = $user->createToken('mobile-app')->plainTextToken;
 
         return response()->json([
-            'message' => 'Login successful',
+            'message' => 'Inicio de sesión exitoso',
             'user' => $user,
             'token' => $token,
         ]);
@@ -187,11 +214,25 @@ class AuthController extends Controller
         $user = $request->user();
 
         $request->validate([
-            'name' => 'sometimes|string|max:255',
-            'billing_document' => 'sometimes|nullable|string|max:50',
+            'name' => ['sometimes', 'string', 'max:255', 'regex:/^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s]+$/u'],
+            'billing_document' => [
+                'sometimes',
+                'nullable',
+                'numeric',
+                'digits_between:5,15',
+                'unique:users,billing_document,' . $user->id
+            ],
             'billing_razon_social' => 'sometimes|nullable|string|max:255',
-            'billing_doc_type' => 'sometimes|nullable|string|max:20',
+            'billing_doc_type' => 'sometimes|nullable|in:CI,NIT',
             'password' => 'sometimes|nullable|string|min:8|confirmed',
+        ], [
+            'name.regex' => 'El nombre solo debe contener letras y espacios.',
+            'billing_document.numeric' => 'El NIT/CI debe contener únicamente números.',
+            'billing_document.digits_between' => 'El NIT/CI debe tener entre 5 y 15 dígitos.',
+            'billing_document.unique' => 'Este NIT/CI ya está registrado por otro usuario.',
+            'billing_doc_type.in' => 'El tipo de documento debe ser CI o NIT.',
+            'password.min' => 'La nueva contraseña debe tener al menos 8 caracteres.',
+            'password.confirmed' => 'La confirmación de la contraseña no coincide.',
         ]);
 
         if ($request->has('name'))
@@ -210,7 +251,7 @@ class AuthController extends Controller
         $user->save();
 
         return response()->json([
-            'message' => 'Profile updated successfully',
+            'message' => 'Perfil actualizado exitosamente',
             'user' => $user->fresh(),
         ]);
     }
@@ -226,7 +267,7 @@ class AuthController extends Controller
         $user->save();
 
         return response()->json([
-            'message' => 'FCM token updated successfully',
+            'message' => 'Token FCM actualizado exitosamente',
         ]);
     }
 }

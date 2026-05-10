@@ -78,7 +78,7 @@ class SystemController extends Controller
 
         $user = auth('sanctum')->user();
         if (!$user)
-            return response()->json(['status' => 'error', 'message' => 'Unauthorized'], 401);
+            return response()->json(['status' => 'error', 'message' => 'No autorizado'], 401);
 
         PromotionView::updateOrCreate(
             ['user_id' => $user->id, 'promotion_id' => $request->promotion_id],

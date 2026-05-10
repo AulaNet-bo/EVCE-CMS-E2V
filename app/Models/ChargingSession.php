@@ -38,7 +38,10 @@ class ChargingSession extends Model
         'current_soc',
         'item_code',
         'item_description',
+        'invoice_url',
+        'external_payment_id',
         'sap_synced_at',
+        'product_id',
     ];
 
     public function tariff(): BelongsTo
@@ -73,5 +76,10 @@ class ChargingSession extends Model
     public function meterValues()
     {
         return $this->hasMany(\App\Models\Steve\ConnectorMeterValue::class, 'transaction_pk', 'transaction_id')->orderBy('value_timestamp', 'desc');
+    }
+
+    public function product(): BelongsTo
+    {
+        return $this->belongsTo(Product::class);
     }
 }

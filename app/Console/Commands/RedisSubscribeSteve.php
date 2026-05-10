@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Events\ConnectorStatusUpdated;
 use App\Models\Connector;
+use App\Services\SteveService;
 use App\Services\SteveDataSource;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Redis;
@@ -13,14 +14,14 @@ class RedisSubscribeSteve extends Command
     protected $signature = 'steve:listen';
     protected $description = 'Listen to Steve status changes via Redis Pub/Sub';
 
-    public function handle()
+    public function handle(SteveService $steveService)
     {
         $prefix = config('steve.redis_prefix', 'steve');
         $channel = "{$prefix}:connector_status:changed";
 
         $this->info("Listening to Redis channel: {$channel}");
 
-        Redis::subscribe([$channel], function ($message) {
+        Redis::subscribe([$channel], function ($message) use ($steveService) {
             $this->info("Message received: {$message}");
 
             $data = json_decode($message, true);
@@ -34,27 +35,29 @@ class RedisSubscribeSteve extends Command
             $connector = Connector::where('connector_pk', $connectorPk)->first();
 
             if (!$connector) {
-                // If not found in local DB, maybe we need a fresh status check
                 $this->warn("Connector PK {$connectorPk} not found in local database.");
                 return;
             }
 
-            // Fetch the latest status from Redis to be sure
+            // Fetch the latest status from Steve Data Source
             $dataSource = app(SteveDataSource::class);
-            $newStatus = $dataSource->getLatestConnectorStatus($connectorPk);
+            $rawStatus = $dataSource->getLatestConnectorStatus($connectorPk);
+            
+            if ($rawStatus) {
+                // Normalize status using the new service
+                $normalizedStatus = $steveService->normalizeStatus($rawStatus);
 
-            if ($newStatus) {
-                $this->info("Broadcasting status update: Station {$connector->station_id}, Connector {$connector->connector_id} -> {$newStatus}");
+                $this->info("Broadcasting status update: Station {$connector->station_id}, Connector {$connector->connector_id} -> {$normalizedStatus} (Raw: {$rawStatus})");
 
                 // Broadcast the event
                 broadcast(new ConnectorStatusUpdated(
                     $connector->station_id,
                     $connector->connector_id,
-                    $newStatus
+                    $normalizedStatus
                 ));
 
                 // Also update local DB status so they are in sync
-                $connector->update(['status' => $newStatus]);
+                $connector->update(['status' => $normalizedStatus]);
             }
         });
     }

@@ -16,7 +16,7 @@ class StationResource extends Resource
 {
     protected static ?string $model = Station::class;
     protected static ?string $navigationIcon = 'heroicon-o-bolt';
-    protected static ?string $navigationGroup = 'Infrastructure';
+    protected static ?string $navigationGroup = 'Infraestructura';
 
     public static function canCreate(): bool
     {

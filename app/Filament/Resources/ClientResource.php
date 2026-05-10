@@ -10,6 +10,8 @@ use Filament\Forms\Form;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
+use Filament\Infolists;
+use Filament\Infolists\Infolist;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\SoftDeletingScope;
 
@@ -54,10 +56,52 @@ class ClientResource extends Resource
                         Forms\Components\Select::make('billing_doc_type')
                             ->options(['NIT' => 'NIT', 'CI' => 'CI']),
                         Forms\Components\TextInput::make('billing_document')
-                            ->label('NIT/CI'),
-                        Forms\Components\TextInput::make('billing_razon_social')
-                            ->label('Nombre/Razón Social'),
+                            ->label('NIT/CI')
+                            ->unique(ignoreRecord: true),
                     ])->columns(3),
+            ]);
+    }
+
+    public static function infolist(Infolist $infolist): Infolist
+    {
+        return $infolist
+            ->schema([
+                Infolists\Components\Section::make('Información del Cliente')
+                    ->schema([
+                        Infolists\Components\TextEntry::make('name')->label('Nombre'),
+                        Infolists\Components\TextEntry::make('email')->label('Email'),
+                        Infolists\Components\TextEntry::make('phone')->label('Teléfono'),
+                        Infolists\Components\TextEntry::make('created_at')->label('Fecha Registro')->dateTime(),
+                    ])->columns(2),
+                
+                Infolists\Components\Section::make('Facturación')
+                    ->schema([
+                        Infolists\Components\TextEntry::make('billing_doc_type')->label('Tipo Doc'),
+                        Infolists\Components\TextEntry::make('billing_document')->label('Documento'),
+                        Infolists\Components\TextEntry::make('billing_razon_social')->label('Razón Social'),
+                    ])->columns(3),
+
+                Infolists\Components\Section::make('Tarjetas / Identificación')
+                    ->schema([
+                        Infolists\Components\RepeatableEntry::make('rfidTags')
+                            ->label('Tarjetas Vinculadas')
+                            ->schema([
+                                Infolists\Components\TextEntry::make('tag_code')
+                                    ->label('Código Tag')
+                                    ->weight('bold'),
+                                Infolists\Components\TextEntry::make('is_virtual')
+                                    ->label('Tipo')
+                                    ->badge()
+                                    ->formatStateUsing(fn ($state) => $state ? 'Virtual' : 'Física')
+                                    ->color(fn ($state) => $state ? 'info' : 'gray'),
+                                Infolists\Components\IconEntry::make('is_active')
+                                    ->label('Activa')
+                                    ->boolean(),
+                                Infolists\Components\TextEntry::make('balance')
+                                    ->label('Saldo Tarjeta')
+                                    ->money('BOB'),
+                            ])->columns(4)
+                    ])
             ]);
     }
 
@@ -85,6 +129,35 @@ class ClientResource extends Resource
             ])
             ->actions([
                 Tables\Actions\ViewAction::make(),
+                Tables\Actions\Action::make('assign_virtual_tag')
+                    ->label('Asignar Tag Virtual')
+                    ->icon('heroicon-o-identification')
+                    ->color('info')
+                    ->requiresConfirmation()
+                    ->visible(fn (\App\Models\User $record) => !$record->rfidTags()->where('is_virtual', true)->exists())
+                    ->action(function (\App\Models\User $record) {
+                        $tagCode = 'A' . strtoupper(\Illuminate\Support\Str::random(7));
+                        while (\App\Models\RfidTag::where('tag_code', $tagCode)->exists()) {
+                            $tagCode = 'A' . strtoupper(\Illuminate\Support\Str::random(7));
+                        }
+
+                        $virtualProduct = \App\Models\Product::where('internal_code', 'VIRTUAL-TAG')->first();
+
+                        \App\Models\RfidTag::create([
+                            'tag_code' => $tagCode,
+                            'user_id' => $record->id,
+                            'product_id' => $virtualProduct?->id,
+                            'name' => 'Tag Virtual App',
+                            'is_active' => true,
+                            'is_virtual' => true,
+                        ]);
+
+                        \Filament\Notifications\Notification::make()
+                            ->title('Tag Virtual asignado')
+                            ->body("Se ha generado el código: $tagCode")
+                            ->success()
+                            ->send();
+                    }),
                 Tables\Actions\EditAction::make(),
             ])
             ->bulkActions([

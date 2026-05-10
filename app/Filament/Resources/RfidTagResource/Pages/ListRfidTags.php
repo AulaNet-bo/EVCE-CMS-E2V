@@ -18,7 +18,6 @@ class ListRfidTags extends ListRecords
                 ->icon('heroicon-o-plus-circle')
                 ->color('success')
                 ->url(RfidTagResource::getUrl('bulk')),
-            Actions\CreateAction::make(),
         ];
     }
 }

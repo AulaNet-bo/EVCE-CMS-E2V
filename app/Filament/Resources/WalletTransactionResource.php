@@ -20,8 +20,10 @@ class WalletTransactionResource extends Resource
     protected static ?string $model = WalletTransaction::class;
 
     protected static ?string $navigationIcon = 'heroicon-o-banknotes';
-    protected static ?string $navigationGroup = 'Finance';
-    protected static ?string $navigationLabel = 'Transactions';
+    protected static ?string $navigationGroup = 'Finanzas';
+    protected static ?string $navigationLabel = 'Transacciones';
+    protected static ?string $modelLabel = 'Transacción';
+    protected static ?string $pluralModelLabel = 'Transacciones';
 
     public static function form(Form $form): Form
     {
@@ -74,6 +76,10 @@ class WalletTransactionResource extends Resource
                 Tables\Columns\TextColumn::make('user.name')
                     ->label('Usuario')
                     ->searchable(),
+                Tables\Columns\TextColumn::make('user.email')
+                    ->label('Correo')
+                    ->searchable()
+                    ->toggleable(isToggledHiddenByDefault: false),
                 Tables\Columns\TextColumn::make('user.billing_document')
                     ->label('NIT/CI')
                     ->searchable(),
@@ -136,27 +142,79 @@ class WalletTransactionResource extends Resource
                         auth()->user()->hasRole(['super_admin', 'system_accountant'])
                     )
                     ->action(function (WalletTransaction $record) {
-                        DB::transaction(function () use ($record) {
-                            $wallet = $record->wallet;
-                            $wallet->increment('balance', $record->amount);
+                        $metadata = $record->metadata ?? [];
+                        $shouldInvoice = $metadata['should_invoice'] ?? false;
+                        
+                        $libService = app(\App\Services\LibelulaPaymentService::class);
 
-                            $record->update([
-                                'status' => 'COMPLETED',
-                                'balance_after' => $wallet->balance,
-                            ]);
-                        });
+                        if ($shouldInvoice) {
+                            // Use the specific MANUAL method that Rafael requested
+                            $result = $libService->createManualInvoice(
+                                $record, 
+                                $record->amount, 
+                                $record->description ?: 'Recarga Manual Validada',
+                                $metadata['line_items'] ?? null
+                            );
 
-                        Notification::make()
-                            ->title('Pago Validado')
-                            ->success()
-                            ->send();
+                            if ($result['success']) {
+                                Notification::make()
+                                    ->title('Pago Validado y Factura Emitida')
+                                    ->success()
+                                    ->send();
+                            } else {
+                                Notification::make()
+                                    ->title('Falla en Libélula')
+                                    ->body($result['message'] ?? 'Error desconocido')
+                                    ->danger()
+                                    ->persistent()
+                                    ->send();
+                            }
+                        } else {
+                            // Regular manual completion without invoice
+                            DB::transaction(function () use ($record) {
+                                $wallet = $record->wallet;
+                                $wallet->increment('balance', $record->amount);
+
+                                $record->update([
+                                    'status' => 'COMPLETED',
+                                    'balance_after' => $wallet->balance,
+                                    'payment_method' => 'CASH/MANUAL'
+                                ]);
+                            });
+
+                            Notification::make()
+                                ->title('Pago Validado Correctamente')
+                                ->success()
+                                ->send();
+                        }
                     }),
+                Tables\Actions\Action::make('check_status')
+                    ->label('Verificar en Libélula')
+                    ->icon('heroicon-o-arrow-path')
+                    ->color('warning')
+                    ->visible(fn($record) => $record->status === 'PENDING' && !empty($record->payment_url))
+                    ->action(function (WalletTransaction $record) {
+                        $service = app(\App\Services\LibelulaPaymentService::class);
+                        $success = $service->verifyStatus($record->id);
+                        
+                        if ($success) {
+                            Notification::make()->title('Pago confirmado y wallet actualizada')->success()->send();
+                        } else {
+                            Notification::make()->title('El pago aún no ha sido procesado en Libélula')->info()->send();
+                        }
+                    }),
+                Tables\Actions\Action::make('view_invoice')
+                    ->label('Ver Factura')
+                    ->icon('heroicon-o-document-text')
+                    ->color('success')
+                    ->url(fn($record) => $record->invoice_url, true)
+                    ->visible(fn($record) => !empty($record->invoice_url)),
                 Tables\Actions\Action::make('copy_link')
                     ->label('Link de Pago')
                     ->icon('heroicon-o-link')
                     ->color('info')
                     ->url(fn($record) => $record->payment_url, true)
-                    ->visible(fn($record) => !empty($record->payment_url)),
+                    ->visible(fn($record) => !empty($record->payment_url) && $record->status === 'PENDING'),
             ])
             ->bulkActions([
                 //

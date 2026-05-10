@@ -8,10 +8,10 @@ return [
     | mysql: reads directly from Steve DB
     | redis: reads from observer cache (steve-observer)
     */
-    'data_source' => env('STEVE_DATA_SOURCE', 'redis'),
+    'data_source' => env('STEVE_DATA_SOURCE', 'mysql'),
 
     // If true, all Steve reads are forced to Redis regardless of env value.
-    'force_redis_reads' => env('STEVE_FORCE_REDIS_READS', true),
+    'force_redis_reads' => filter_var(env('STEVE_FORCE_REDIS_READS', false), FILTER_VALIDATE_BOOLEAN),
 
     /*
     |--------------------------------------------------------------------------

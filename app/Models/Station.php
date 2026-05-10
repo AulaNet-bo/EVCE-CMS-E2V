@@ -39,4 +39,31 @@ class Station extends Model
     {
         return $this->hasMany(Connector::class);
     }
+
+    public function getLastHeartbeatAttribute($value)
+    {
+        return app(\App\Services\SteveDataSource::class)->getLatestChargeBoxStatus($this->charge_box_id) ?? $value;
+    }
+
+    public function getStatusAttribute()
+    {
+        $connectors = $this->connectors;
+        if ($connectors->isEmpty()) {
+            return 'Offline';
+        }
+
+        $statuses = $connectors->pluck('status')->unique();
+
+        if ($statuses->contains('Charging')) {
+            return 'Charging';
+        }
+        if ($statuses->contains('Occupied')) {
+            return 'Occupied';
+        }
+        if ($statuses->contains('Available')) {
+            return 'Available';
+        }
+
+        return $statuses->first() ?? 'Unknown';
+    }
 }

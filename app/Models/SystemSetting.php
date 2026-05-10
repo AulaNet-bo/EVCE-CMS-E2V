@@ -20,28 +20,37 @@ class SystemSetting extends Model
         'text_color',
         'font_family',
         'libelula_app_key',
+        'libelula_invoicing_app_key',
+        'invoicing_app_key',
         'libelula_api_url',
         'invoicing_policy',
         'nit_requirement_policy',
-    ];
-
-    protected $casts = [
-        'is_disclaimer_visible' => 'boolean',
+        'libelula_canal_caja',
+        'libelula_canal_caja_sucursal',
+        'libelula_canal_caja_usuario',
+        'libelula_sector_code',
+        'libelula_product_code',
+        'steve_manager_url',
+        'steve_manager_user',
+        'steve_manager_pass',
+        'invoice_on_bulk_creation',
+        'billing_grace_period',
+        'product_recharge_id',
+        'product_energy_id',
+        'product_connection_id',
+        'product_penalty_id',
     ];
 
     /**
-     * Get the singleton settings record.
+     * Singleton-like helper to get the current settings.
      */
     public static function get(): self
     {
-        return self::firstOrCreate([], [
+        return self::first() ?? new self([
             'platform_name' => 'E2V Charging Network',
-            'is_disclaimer_visible' => true,
-            'primary_color' => '#4F46E5',
-            'secondary_color' => '#10B981',
-            'button_color' => '#4F46E5',
-            'text_color' => '#111827',
-            'font_family' => 'Inter',
+            'libelula_api_url' => 'https://api.libelula.bo/rest',
+            'invoicing_policy' => 'recharge',
+            'nit_requirement_policy' => 'optional',
         ]);
     }
 }

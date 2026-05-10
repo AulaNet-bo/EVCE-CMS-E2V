@@ -18,8 +18,10 @@ class ChargingSessionResource extends Resource
     protected static ?string $model = ChargingSession::class;
 
     protected static ?string $navigationIcon = 'heroicon-o-server-stack';
-    protected static ?string $navigationGroup = 'System / Debug';
-    protected static ?string $navigationLabel = 'Raw Logs (Steve)';
+    protected static ?string $navigationGroup = 'Sistema / Debug';
+    protected static ?string $navigationLabel = 'Logs Crudos (SteVe)';
+    protected static ?string $modelLabel = 'Log de Sesión';
+    protected static ?string $pluralModelLabel = 'Logs Crudos (SteVe)';
 
     public static function canCreate(): bool
     {

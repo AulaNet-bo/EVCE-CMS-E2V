@@ -26,18 +26,19 @@ class FirebaseService
     }
 
     /**
-     * Sync station status to Firebase.
+     * Sync station data to Firebase (including connectors and status).
      */
-    public static function syncStationStatus($stationId, $status)
+    public static function syncStationData($chargeBoxId, array $data)
     {
         $dbUrl = rtrim(config('services.firebase.database_url', env('FIREBASE_DATABASE_URL')), '/');
         if (!$dbUrl || $dbUrl === '') return;
 
         try {
-            $url = "{$dbUrl}/stations/{$stationId}/status.json";
-            Http::put($url, $status);
+            // Update the specific station node
+            $url = "{$dbUrl}/stations/{$chargeBoxId}.json";
+            Http::patch($url, $data); // Use PATCH to avoid overwriting unrelated fields
         } catch (\Throwable $e) {
-            Log::error("Firebase sync error for station {$stationId}: " . $e->getMessage());
+            Log::error("Firebase sync error for station {$chargeBoxId}: " . $e->getMessage());
         }
     }
 }

@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  # 1. Base de Datos MariaDB (Compartida entre STEVE Java y STEVE CMS)
+  db:
+    image: mariadb:10.6
+    container_name: evce-mariadb
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-steve_password_secure}
+      MYSQL_DATABASE: ${DB_DATABASE:-stevedb}
+      MYSQL_USER: ${DB_USERNAME:-steve}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-steve_password_secure}
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    networks:
+      - evce-network
+
+  # 2. STEVE Backend (Java) - Servidor OCPP
+  steve-java:
+    image: rwthika/steve:latest
+    container_name: steve-java-backend
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      - DB_HOST=db
+      - DB_PORT=3306
+      - DB_DATABASE=${DB_DATABASE:-stevedb}
+      - DB_USER=${DB_USERNAME:-steve}
+      - DB_PASSWORD=${DB_PASSWORD:-steve_password_secure}
+    ports:
+      - "8180:8080" # Panel Web antiguo de STEVE (opcional)
+      - "8443:8443" # Puerto WSS OCPP
+      - "8081:8081" # Puerto WS OCPP (para testing o proxied)
+    networks:
+      - evce-network
+
+  # 3. Redis (Cache y Colas para el CMS)
+  redis:
+    image: redis:alpine
+    container_name: evce-redis
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    networks:
+      - evce-network
+
+  # 4. STEVE CMS (Laravel)
+  cms:
+    build:
+      context: ../
+      dockerfile: Dockerfile.cms
+    container_name: evce-cms-app
+    restart: unless-stopped
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - ../:/app
+    environment:
+      - DB_CONNECTION=mysql
+      - DB_HOST=db
+      - DB_PORT=3306
+      - DB_DATABASE=${DB_DATABASE:-stevedb}
+      - DB_USERNAME=${DB_USERNAME:-steve}
+      - DB_PASSWORD=${DB_PASSWORD:-steve_password_secure}
+      - REDIS_HOST=redis
+    ports:
+      - "80:8080" # El CMS se expone en el puerto 80 del servidor
+    command: /bin/bash -c "php artisan serve --host=0.0.0.0 --port=8080"
+    networks:
+      - evce-network
+
+volumes:
+  mariadb-data:
+  redis-data:
+
+networks:
+  evce-network:
+    name: evce-network
+    driver: bridge

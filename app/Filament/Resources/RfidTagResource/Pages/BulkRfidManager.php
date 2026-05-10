@@ -48,19 +48,45 @@ class BulkRfidManager extends Page
                             ->required()
                             ->rows(8),
 
-                        TextInput::make('credit_amount')
-                            ->label('Saldo Inicial (BOB)')
-                            ->numeric()
-                            ->default(0)
-                            ->prefix('BOB'),
+                        Section::make('Detalles de la Tarjeta Física')
+                            ->schema([
+                                Select::make('card_product_id')
+                                    ->label('Producto de Venta (Tarjeta)')
+                                    ->options(\App\Models\Product::pluck('name', 'id'))
+                                    ->required()
+                                    ->searchable()
+                                    ->preload()
+                                    ->helperText('Producto SIAT que representa el plástico de la tarjeta.'),
+                                TextInput::make('card_price')
+                                    ->label('Precio de la Tarjeta (BOB)')
+                                    ->numeric()
+                                    ->default(20)
+                                    ->required()
+                                    ->live(),
+                                TextInput::make('card_discount')
+                                    ->label('Descuento de Tarjeta (BOB)')
+                                    ->numeric()
+                                    ->default(20)
+                                    ->required()
+                                    ->live()
+                                    ->helperText('Si el descuento es igual al precio, el cliente no paga por la tarjeta, pero aparece en la factura.'),
+                            ])->columns(3),
 
-                        Select::make('company_id')
-                            ->label('Empresa Destino')
-                            ->options(Company::all()->pluck('name', 'id'))
-                            ->searchable()
-                            ->preload()
-                            ->helperText('Si no se selecciona, se usará la empresa maestra.')
-                            ->live(),
+                        Section::make('Detalles de Recarga Inicial')
+                            ->schema([
+                                Select::make('recharge_product_id')
+                                    ->label('Producto de Recarga')
+                                    ->options(\App\Models\Product::pluck('name', 'id'))
+                                    ->searchable()
+                                    ->preload()
+                                    ->required()
+                                    ->helperText('Producto SIAT que representa el servicio de recarga de saldo.'),
+                                TextInput::make('credit_amount')
+                                    ->label('Saldo a Recargar (BOB)')
+                                    ->numeric()
+                                    ->default(0)
+                                    ->required(),
+                            ])->columns(2),
 
                         Select::make('assignment_type')
                             ->label('Tipo de Asignación')
@@ -98,7 +124,25 @@ class BulkRfidManager extends Page
                             ->preload()
                             ->visible(fn(callable $get) => $get('assignment_type') === 'existing')
                             ->required(fn(callable $get) => $get('assignment_type') === 'existing'),
-                    ])
+
+                        Section::make('Facturación y Pago')
+                            ->schema([
+                                Toggle::make('emit_invoice')
+                                    ->label('Emitir Factura Oficial (Libélula)')
+                                    ->default(fn() => \App\Models\SystemSetting::get()->invoice_on_bulk_creation)
+                                    ->live(),
+                                
+                                Select::make('payment_method')
+                                    ->label('Método de Pago')
+                                    ->options([
+                                        'manual' => 'Efectivo / Manual (Caja)',
+                                        'libelula' => 'Pasarela de Pago (QR/Tarjeta)',
+                                    ])
+                                    ->default('manual')
+                                    ->required()
+                                    ->visible(fn(callable $get) => $get('emit_invoice')),
+                            ])->columns(2),
+                    ])->columns(2),
             ])
             ->statePath('data');
     }
@@ -107,10 +151,16 @@ class BulkRfidManager extends Page
     {
         $inputData = $this->form->getState();
         $codes = array_filter(array_map('trim', explode("\n", $inputData['tag_codes'])));
-        $credit = $inputData['credit_amount'];
+        $credit = (float) ($inputData['credit_amount'] ?? 0);
+        $cardPrice = (float) ($inputData['card_price'] ?? 0);
+        $cardDiscount = (float) ($inputData['card_discount'] ?? 0);
         $assignmentType = $inputData['assignment_type'];
-        $companyId = $inputData['company_id'];
+        $companyId = $inputData['company_id'] ?? null;
         $selectedUserId = $inputData['user_id'] ?? null;
+        $cardProductId = $inputData['card_product_id'];
+        $rechargeProductId = $inputData['recharge_product_id'];
+
+        $totalToPay = max(0, $cardPrice - $cardDiscount) + $credit;
 
         if (empty($codes)) {
             Notification::make()->title('No se proporcionaron códigos')->danger()->send();
@@ -140,6 +190,13 @@ class BulkRfidManager extends Page
             }
 
             foreach ($codes as $code) {
+                // Standardize to 8 characters (remove colons, padding, etc)
+                $code = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', $code));
+                
+                if (strlen($code) > 8) {
+                    $code = substr($code, -8);
+                }
+                
                 if (RfidTag::where('tag_code', $code)->exists()) {
                     $errorCount++;
                     continue;
@@ -163,33 +220,91 @@ class BulkRfidManager extends Page
                 }
 
                 // Create RFID Tag
-                RfidTag::create([
+                $tag = RfidTag::create([
                     'tag_code' => $code,
                     'user_id' => $userId,
                     'company_id' => $companyId,
+                    'product_id' => $cardProductId, // Store the physical card product internally
                     'name' => "Tarjeta $code",
+                    'balance' => $credit, // Assign initial credit to the tag!
+                    'currency' => 'BOB',
                     'is_active' => true,
                 ]);
 
-                // Initial Credit
-                if ($credit > 0 && $userId) {
+                // Record initial transaction (for history/tracking)
+                if ($totalToPay > 0 && $userId) {
                     $wallet = Wallet::firstOrCreate(
                         ['user_id' => $userId],
                         ['balance' => 0, 'currency' => 'BOB']
                     );
 
-                    $wallet->increment('balance', $credit);
+                    // If manual, stay PENDING and don't increment balance yet
+                    $isManual = ($this->data['payment_method'] ?? 'manual') === 'manual';
+                    $shouldInvoice = $this->data['emit_invoice'] ?? false;
+                    
+                    $lineItems = [];
+                    
+                    // Line item 1: The physical card
+                    if ($cardPrice > 0 || $cardDiscount > 0) {
+                        $cardSiatCode = \App\Models\Product::find($cardProductId)?->siat_product_code ?? '1';
+                        $lineItems[] = [
+                            'concepto' => 'Venta de Tarjeta Física RFID',
+                            'cantidad' => 1,
+                            'costo_unitario' => $cardPrice,
+                            'descuento_unitario' => $cardDiscount,
+                            'detalle' => "Tarjeta Plástica $code",
+                            'codigo_producto' => $cardSiatCode,
+                            'ignora_factura' => false,
+                        ];
+                    }
+                    
+                    // Line item 2: The recharge service
+                    if ($credit > 0) {
+                        $rechargeSiatCode = \App\Models\Product::find($rechargeProductId)?->siat_product_code ?? '1';
+                        $lineItems[] = [
+                            'concepto' => 'Recarga de Saldo Billetera',
+                            'cantidad' => 1,
+                            'costo_unitario' => $credit,
+                            'descuento_unitario' => 0,
+                            'detalle' => "Recarga inicial tarjeta $code",
+                            'codigo_producto' => $rechargeSiatCode,
+                            'ignora_factura' => false,
+                        ];
+                    }
 
-                    WalletTransaction::create([
+                    $tx = WalletTransaction::create([
                         'user_id' => $userId,
                         'wallet_id' => $wallet->id,
                         'type' => 'RECHARGE',
-                        'amount' => $credit,
-                        'balance_after' => $wallet->balance,
+                        'amount' => $totalToPay, // Total payment recorded
+                        'balance_after' => $tag->balance,
                         'currency' => 'BOB',
-                        'status' => 'COMPLETED',
-                        'description' => 'Carga inicial por lote',
+                        'reference_id' => 'BULK-' . $code . '-' . now()->format('YmdHis'),
+                        'status' => $isManual ? 'PENDING' : 'PENDING', // Both start pending for Libelula/Manual now
+                        'description' => 'Carga inicial y venta de tarjeta RFID',
+                        'metadata' => [
+                            'should_invoice' => $shouldInvoice,
+                            'razon_social' => $this->data['billing_razon_social'] ?? null,
+                            'documento' => $this->data['billing_document'] ?? null,
+                            'line_items' => $lineItems,
+                        ]
                     ]);
+
+                    // If it's Libelula Gateway, create the payment link
+                    if (!$isManual) {
+                        $libService = app(\App\Services\LibelulaPaymentService::class);
+                        
+                        $result = $libService->createPayment($wallet, $totalToPay, 'Carga inicial y venta de tarjeta', [
+                            'emite_factura' => $shouldInvoice,
+                            'internal_usage_tx' => true,
+                            'transaction_id' => $tx->id,
+                            'line_items' => $lineItems,
+                        ], false); // isPaid = false
+
+                        if (!$result['success']) {
+                            throw new \Exception("Libélula: " . ($result['detail'] ?? $result['message'] ?? 'Error desconocido'));
+                        }
+                    }
                 }
 
                 $createdCount++;

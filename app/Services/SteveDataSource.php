@@ -34,11 +34,16 @@ class SteveDataSource
 
     public function source(): string
     {
+        // FORCED FIX: Overriding config to resolve production sync issues with stale Redis
+        return 'mysql';
+        
+        /* Original logic:
         if (config('steve.force_redis_reads', true)) {
             return 'redis';
         }
 
         return config('steve.data_source', 'redis');
+        */
     }
 
     public function usingRedis(): bool
@@ -184,6 +189,28 @@ class SteveDataSource
         }
 
         return $results;
+    }
+
+    public function getLatestChargeBoxStatus(string $chargeBoxId): ?string
+    {
+        $cacheKey = "cb_heartbeat:{$chargeBoxId}";
+        if (isset(static::$localCache[$cacheKey])) {
+            return static::$localCache[$cacheKey];
+        }
+
+        if (!$this->usingRedis()) {
+            $row = DB::connection('steve')->table('charge_box')
+                ->where('charge_box_id', $chargeBoxId)
+                ->first();
+            $heartbeat = $row->last_heartbeat_timestamp ?? null;
+        } else {
+            $prefix = $this->redisPrefix();
+            $row = $this->normalizeRedisRow($this->redis()->hgetall("{$prefix}:charge_box:{$chargeBoxId}"));
+            $heartbeat = $row['last_heartbeat_timestamp'] ?? null;
+        }
+
+        static::$localCache[$cacheKey] = $heartbeat;
+        return $heartbeat;
     }
 
     public function getLatestConnectorStatus(int $connectorPk): ?string
@@ -452,11 +479,17 @@ class SteveDataSource
             return $mv;
         }
 
+        // Secondary common variant
+        $mv = $this->getLatestMeterValue($transactionPk, 'Energy.Active.Import');
+        if ($mv) {
+            return $mv;
+        }
+
         // Fallback: any energy measurand
         if (!$this->usingRedis()) {
             return DB::connection('steve')->table('connector_meter_value')
                 ->where('transaction_pk', $transactionPk)
-                ->where('measurand', 'like', 'Energy.%')
+                ->where('measurand', 'like', 'Energy%') // More broad match
                 ->orderBy('value_timestamp', 'desc')
                 ->first();
         }
@@ -473,7 +506,8 @@ class SteveDataSource
                 continue;
             }
             $m = (string) ($row['measurand'] ?? '');
-            if (stripos($m, 'Energy.') !== 0) {
+            // Broad search for anything containing "Energy"
+            if (stripos($m, 'Energy') === false) {
                 continue;
             }
             if (!$latest || (($row['value_timestamp'] ?? '') > ($latest['value_timestamp'] ?? ''))) {

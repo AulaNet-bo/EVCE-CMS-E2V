@@ -4,13 +4,47 @@ namespace App\Http\Controllers\Api\V1\Mobile;
 
 use App\Http\Controllers\Controller;
 use App\Models\Wallet;
+use App\Models\RfidTag;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use App\Services\LibelulaPaymentService;
+use Barryvdh\DomPDF\Facade\Pdf;
 
 class WalletController extends Controller
 {
+    public function downloadHistory(Request $request)
+    {
+        $user = $request->user();
+        
+        // Manual auth for direct link downloads if sanctum fails
+        if (!$user && $request->has('token')) {
+            $accessToken = \Laravel\Sanctum\PersonalAccessToken::findToken($request->query('token'));
+            if ($accessToken) {
+                $user = $accessToken->tokenable;
+            }
+        }
+
+        if (!$user) {
+            return response()->json(['message' => 'No autorizado'], 401);
+        }
+
+        $wallet = Wallet::where('user_id', $user->id)->first();
+
+        if (!$wallet) {
+            return response()->json(['message' => 'Sin billetera activa'], 404);
+        }
+
+        $transactions = $wallet->transactions()->latest()->get();
+
+        $pdf = Pdf::loadView('pdf.wallet_history', [
+            'user' => $user,
+            'transactions' => $transactions,
+        ]);
+
+        return $pdf->download("Historial_ElectroPoint_{$user->id}.pdf");
+    }
+
     public function balance(Request $request)
     {
         $wallet = Wallet::firstOrCreate(
@@ -18,11 +52,40 @@ class WalletController extends Controller
             ['balance' => 0, 'currency' => 'BOB', 'is_postpaid' => false, 'credit_limit' => 0]
         );
 
+        $tags = RfidTag::where('user_id', $request->user()->id)
+            ->select('id', 'tag_code', 'name', 'balance', 'currency', 'is_active', 'is_virtual', 'user_id')
+            ->get();
+
+        $appBalance = (float) $wallet->balance;
+        $physicalBalance = (float) $tags->where('is_virtual', false)->sum('balance');
+
         return response()->json([
-            'balance' => $wallet->balance,
+            'balance' => $appBalance + $physicalBalance,
+            'app_balance' => $appBalance,
+            'physical_balance' => $physicalBalance,
             'currency' => $wallet->currency,
-            'credit_limit' => $wallet->credit_limit
+            'credit_limit' => (float) $wallet->credit_limit,
+            'tags' => $tags
         ]);
+    }
+
+    public function updateTag(Request $request, RfidTag $tag)
+    {
+        if ($tag->user_id !== $request->user()->id) {
+            return response()->json(['message' => 'No autorizado'], 403);
+        }
+
+        if ($tag->is_virtual) {
+            return response()->json(['message' => 'No se puede cambiar el nombre de un Tag Virtual'], 422);
+        }
+
+        $validated = $request->validate([
+            'name' => 'required|string|max:100',
+        ]);
+
+        $tag->update(['name' => $validated['name']]);
+
+        return response()->json(['message' => 'Tarjeta actualizada exitosamente', 'tag' => $tag]);
     }
 
     public function history(Request $request)
@@ -36,7 +99,7 @@ class WalletController extends Controller
             ]);
         }
 
-        return response()->json($wallet->transactions()->latest()->paginate(10));
+        return response()->json($wallet->transactions()->latest()->paginate(50));
     }
 
     public function topup(Request $request)
@@ -136,6 +199,8 @@ class WalletController extends Controller
             ['balance' => 0, 'currency' => 'BOB', 'is_postpaid' => false, 'credit_limit' => 0]
         );
 
+        \Illuminate\Support\Facades\Log::error('DEBUG: LIBELULA START', ['amount' => $request->input('amount'), 'user_id' => $user->id]);
+
         $result = $libelula->createPayment(
             $wallet,
             round((float) $request->input('amount'), 2),
@@ -183,6 +248,14 @@ class WalletController extends Controller
 
         $statusCol = Schema::hasColumn('wallet_transactions', 'status') ? 'status' : null;
         $status = $statusCol ? (string) ($tx->{$statusCol} ?? 'PENDING') : 'PENDING';
+
+        if (strtoupper($status) === 'PENDING') {
+            $libelula = app(\App\Services\LibelulaPaymentService::class);
+            if ($libelula->verifyStatus($transactionId)) {
+                $tx = DB::table('wallet_transactions')->where('id', $transactionId)->first();
+                $status = $statusCol ? (string) ($tx->{$statusCol} ?? 'COMPLETED') : 'COMPLETED';
+            }
+        }
 
         return response()->json([
             'transaction_id' => (int) $tx->id,

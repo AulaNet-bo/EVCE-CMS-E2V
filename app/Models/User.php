@@ -30,6 +30,21 @@ class User extends Authenticatable implements \Filament\Models\Contracts\Filamen
         return $this->belongsTo(Company::class);
     }
 
+    public function wallet(): \Illuminate\Database\Eloquent\Relations\HasOne
+    {
+        return $this->hasOne(Wallet::class);
+    }
+
+    public function rfidTags(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(RfidTag::class);
+    }
+
+    public function getBalanceAttribute()
+    {
+        return $this->wallet->balance ?? 0;
+    }
+
     /**
      * The attributes that are mass assignable.
      *

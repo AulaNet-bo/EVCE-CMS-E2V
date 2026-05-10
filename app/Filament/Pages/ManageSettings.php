@@ -118,6 +118,35 @@ class ManageSettings extends Page
                             ->helperText('Por defecto: https://api.libelula.bo/rest'),
                     ])->columns(2),
 
+                Section::make('Configuración Caja Manual (Facturación Directa)')
+                    ->description('Credenciales específicas para el canal de caja física y facturación inmediata.')
+                    ->schema([
+                        TextInput::make('libelula_invoicing_app_key')
+                            ->label('Libelula Invoicing App Key')
+                            ->password()
+                            ->revealable()
+                            ->helperText('App Key dedicada exclusivamente para la emisión de facturas directas.'),
+                        TextInput::make('libelula_canal_caja')
+                            ->label('Hash Canal Caja')
+                            ->password()
+                            ->revealable()
+                            ->helperText('Hash proporcionado por Libélula para cobros directos.'),
+                        TextInput::make('libelula_canal_caja_sucursal')
+                            ->label('Nombre de Sucursal')
+                            ->placeholder('SUCURSAL 1'),
+                        TextInput::make('libelula_canal_caja_usuario')
+                            ->label('Nombre de Usuario/Cajero')
+                            ->placeholder('CAJERO 1'),
+                        TextInput::make('libelula_sector_code')
+                            ->label('Código de Sector (SIAT)')
+                            ->default('1')
+                            ->helperText('Generalmente 1 para servicios estándar.'),
+                        TextInput::make('libelula_product_code')
+                            ->label('Código de Producto (SIAT)')
+                            ->default('1')
+                            ->helperText('Código de producto registrado en su catálogo de Libélula (ej: 1 o 100).'),
+                    ])->columns(2),
+
                 Section::make('Políticas de Negocio y Facturación (SIAT)')
                     ->description('Defina cómo y cuándo se generan los documentos tributarios.')
                     ->schema([
@@ -138,6 +167,46 @@ class ManageSettings extends Page
                             ])
                             ->required()
                             ->helperText('Si es obligatorio, los usuarios sin NIT/CI verán un bloqueo en la App hasta registrar sus datos.'),
+
+                        Toggle::make('invoice_on_bulk_creation')
+                            ->label('Facturar automáticamente en creación masiva')
+                            ->default(true)
+                            ->helperText('Si está activado, se emitirá una factura por el saldo inicial al crear tarjetas en lote.'),
+
+                        TextInput::make('billing_grace_period')
+                            ->label('Periodo de Gracia (Minutos)')
+                            ->numeric()
+                            ->default(3)
+                            ->suffix('minutos')
+                            ->helperText('Tiempo en el que no se volverá a cobrar el fee de inicio si un usuario reinicia una carga.'),
+                    ])->columns(2),
+
+                Section::make('Mapeo de Productos para Facturación (SFE)')
+                    ->description('Asigne qué productos de su catálogo se usarán para cada concepto en la factura.')
+                    ->schema([
+                        Select::make('product_recharge_id')
+                            ->label('Producto para Recargas')
+                            ->options(\App\Models\Product::pluck('name', 'id'))
+                            ->searchable()
+                            ->helperText('Usado al realizar recargas manuales o por QR.'),
+                        
+                        Select::make('product_energy_id')
+                            ->label('Producto para Energía (kWh)')
+                            ->options(\App\Models\Product::pluck('name', 'id'))
+                            ->searchable()
+                            ->helperText('Usado para el concepto de consumo de energía.'),
+
+                        Select::make('product_connection_id')
+                            ->label('Producto para Cargo de Inicio (Fee)')
+                            ->options(\App\Models\Product::pluck('name', 'id'))
+                            ->searchable()
+                            ->helperText('Usado para el concepto de cargo por conexión/inicio.'),
+
+                        Select::make('product_penalty_id')
+                            ->label('Producto para Multa por Tiempo')
+                            ->options(\App\Models\Product::pluck('name', 'id'))
+                            ->searchable()
+                            ->helperText('Usado para el concepto de penalty fee por tiempo excedido.'),
                     ])->columns(2),
             ])
             ->statePath('data');

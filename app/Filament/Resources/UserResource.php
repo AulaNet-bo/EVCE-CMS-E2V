@@ -82,7 +82,8 @@ class UserResource extends Resource
                             ->label('Teléfono')
                             ->tel(),
                         Forms\Components\TextInput::make('billing_document')
-                            ->label('Documento/NIT'),
+                            ->label('Documento/NIT')
+                            ->unique(ignoreRecord: true),
                         Forms\Components\Select::make('billing_doc_type')
                             ->label('Tipo de Documento')
                             ->options([
@@ -101,42 +102,58 @@ class UserResource extends Resource
         return $table
             ->columns([
                 Tables\Columns\TextColumn::make('sap_client_code')
+                    ->label('Código SAP')
                     ->searchable(),
                 Tables\Columns\TextColumn::make('name')
+                    ->label('Nombre')
                     ->searchable(),
                 Tables\Columns\TextColumn::make('email')
+                    ->label('Correo')
                     ->searchable(),
                 Tables\Columns\TextColumn::make('email_verified_at')
+                    ->label('Correo Verificado')
                     ->dateTime()
                     ->sortable(),
                 Tables\Columns\TextColumn::make('created_at')
+                    ->label('Creado en')
                     ->dateTime()
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
                 Tables\Columns\TextColumn::make('updated_at')
+                    ->label('Actualizado en')
                     ->dateTime()
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
                 Tables\Columns\TextColumn::make('company.name')
+                    ->label('Empresa')
                     ->numeric()
                     ->sortable(),
                 Tables\Columns\TextColumn::make('phone')
+                    ->label('Teléfono')
                     ->searchable(),
                 Tables\Columns\TextColumn::make('address')
+                    ->label('Dirección')
                     ->searchable(),
                 Tables\Columns\TextColumn::make('city')
+                    ->label('Ciudad')
                     ->searchable(),
                 Tables\Columns\TextColumn::make('billing_document')
+                    ->label('Documento/NIT')
                     ->searchable(),
                 Tables\Columns\TextColumn::make('billing_doc_type')
+                    ->label('Tipo Doc.')
                     ->searchable(),
                 Tables\Columns\TextColumn::make('billing_complement')
+                    ->label('Complemento')
                     ->searchable(),
                 Tables\Columns\TextColumn::make('billing_razon_social')
+                    ->label('Razón Social')
                     ->searchable(),
                 Tables\Columns\IconColumn::make('is_admin')
+                    ->label('Es Admin')
                     ->boolean(),
                 Tables\Columns\TextColumn::make('sap_synced_at')
+                    ->label('Sincronizado SAP')
                     ->dateTime()
                     ->sortable(),
             ])

@@ -19,7 +19,7 @@ class ChargingSessionResource extends Resource
 
     protected static ?string $navigationIcon = 'heroicon-o-bolt';
     protected static ?string $navigationLabel = 'Charging Sessions';
-    protected static ?string $navigationGroup = 'Business';
+    protected static ?string $navigationGroup = 'Negocio';
     protected static ?int $navigationSort = 1;
 
     public static function canCreate(): bool

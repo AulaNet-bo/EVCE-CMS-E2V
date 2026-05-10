@@ -24,6 +24,10 @@ class SapExportService
                 'razon_social' => $user->billing_razon_social,
                 'nit_ci' => $user->billing_document,
                 'doc_type' => $user->billing_doc_type,
+                'company_id' => $user->company_id,
+                'company_name' => $user->company?->name,
+                'is_admin' => $user->is_admin,
+                'balance' => $user->wallet?->balance ?? 0,
                 'synced_at' => $user->sap_synced_at,
             ];
         });
@@ -60,6 +64,11 @@ class SapExportService
                     'external_id_pos' => $tx->external_payment_id,
                     'internal_ref' => $tx->id,
                     'transaction_type_label' => $label,
+                    'rfid_tag' => $tx->metadata['rfid_tag'] ?? null,
+                    'invoice_number' => $tx->invoice_number,
+                    'invoice_url' => $tx->invoice_url,
+                    'payment_evidence_path' => $tx->payment_evidence_path,
+                    'status' => $tx->status,
                 ];
             });
     }
@@ -105,6 +114,12 @@ class SapExportService
                     'currency' => $session->currency,
                     'internal_ref' => $session->id,
                     'transaction_type_label' => $label,
+                    'rfid_tag_id' => $session->rfid_tag_id,
+                    'session_fee' => (float) $session->session_fee,
+                    'time_fee' => (float) $session->time_fee,
+                    'energy_cost' => (float) $session->energy_cost,
+                    'utility_cost' => (float) $session->utility_cost,
+                    'margin' => (float) $session->margin,
                 ];
             });
     }

@@ -16,6 +16,14 @@ class WebhookController extends Controller
         Log::info('Libelula Webhook Received', $payload);
 
         try {
+            \App\Models\LibelulaApiLog::create([
+                'endpoint' => 'Webhook',
+                'method' => 'WEBHOOK',
+                'request_payload' => $payload,
+                'response_payload' => null,
+                'http_status' => 200,
+            ]);
+
             $libelula->handleWebhook($payload);
             return response()->json(['message' => 'Webhook processed']);
         } catch (\Throwable $e) {

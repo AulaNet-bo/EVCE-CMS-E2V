@@ -6,11 +6,10 @@ use App\Http\Controllers\Controller;
 use App\Models\ChargingSession;
 use App\Models\RfidTag;
 use App\Models\Station;
+use App\Services\SteveService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use GuzzleHttp\Cookie\CookieJar;
 
 class ChargingSessionController extends Controller
 {
@@ -18,9 +17,68 @@ class ChargingSessionController extends Controller
     {
         $sessions = ChargingSession::where('user_id', $request->user()->id)
             ->orderBy('created_at', 'desc')
-            ->paginate(10);
+            ->paginate(15);
+
+        // Enhance active sessions with real-time metrics from SteVe
+        $sessions->getCollection()->transform(function ($session) {
+            if ($session->status === 'Active' && $session->transaction_id) {
+                $session->current_metrics = $this->getSteveLiveMetrics((int) $session->transaction_id);
+            }
+            return $session;
+        });
 
         return response()->json($sessions);
+    }
+
+    /**
+     * Fetches latest metrics (Power, Energy, SoC) from SteVe meter_value table.
+     */
+    private function getSteveLiveMetrics(int $transactionId): array
+    {
+        try {
+            $latestValues = DB::connection('steve')
+                ->table('connector_meter_value')
+                ->where('transaction_pk', $transactionId)
+                ->orderByDesc('value_timestamp')
+                ->get();
+
+            if ($latestValues->isEmpty()) {
+                return ['power_kw' => 0, 'energy_kwh' => 0, 'soc' => null];
+            }
+
+            $metrics = [
+                'power_kw' => 0,
+                'energy_kwh' => 0,
+                'soc' => null,
+                'timestamp' => $latestValues->first()->value_timestamp ?? null,
+            ];
+
+            foreach ($latestValues as $mv) {
+                $m = strtolower($mv->measurand ?? '');
+                $v = (float) $mv->value;
+
+                // Power
+                if (str_contains($m, 'power.active.import') && $metrics['power_kw'] == 0) {
+                    $metrics['power_kw'] = round($mv->unit === 'W' ? $v / 1000 : $v, 2);
+                }
+                // Energy (Total so far)
+                if (str_contains($m, 'energy.active.import.register') && $metrics['energy_kwh'] == 0) {
+                    $metrics['energy_kwh'] = round($mv->unit === 'Wh' ? $v / 1000 : $v, 2);
+                }
+                // SoC (Battery %)
+                if (str_contains($m, 'soc') && $metrics['soc'] === null) {
+                    $metrics['soc'] = (int) $v;
+                }
+
+                // Stop if we have all
+                if ($metrics['power_kw'] > 0 && $metrics['energy_kwh'] > 0 && $metrics['soc'] !== null) break;
+            }
+
+            return $metrics;
+        } catch (\Throwable $e) {
+            Log::error('Error fetching SteVe metrics', ['tx' => $transactionId, 'error' => $e->getMessage()]);
+            return ['power_kw' => 0, 'energy_kwh' => 0, 'soc' => null, 'error' => true];
+        }
     }
 
     public function start(Request $request, Station $station)
@@ -41,13 +99,57 @@ class ChargingSessionController extends Controller
 
         $connectorId = (int) ($request->input('connector_id') ?: ($station->connectors()->orderBy('connector_id')->value('connector_id') ?? 1));
 
-        $result = $this->remoteStart($station->charge_box_id, $tag->tag_code, $connectorId);
+        // 1. Dynamic Balance Validation (v3.0)
+        // User requirements: Start credit must cover Session Fee + 5kWh of current block energy.
+        $tariff = \App\Models\Tariff::resolveForStation($station);
+        $currentPrices = $tariff ? $tariff->getCurrentPrices() : ['price_session' => 0, 'price_kwh' => 0, 'currency' => 'USD'];
+        
+        $sessionFee = (float) $currentPrices['price_session'];
+        $rateKwh = (float) $currentPrices['price_kwh'];
+        $safetyKwh = 5.0;
+        $minRequired = $sessionFee + ($safetyKwh * $rateKwh);
+        
+        if ($user->balance < $minRequired) {
+            $currency = $currentPrices['currency'] ?? 'USD';
+            return response()->json([
+                'message' => "Saldo insuficiente para iniciar.",
+                'detail' => "Se requiere un saldo mínimo de {$currency} " . number_format($minRequired, 2) . " para cubrir el cargo de inicio (\${$sessionFee}) y un respaldo de {$safetyKwh}kWh (\$" . ($safetyKwh * $rateKwh) . ").",
+                'status' => 'insufficient_balance',
+                'balance' => (float) $user->balance,
+                'required' => $minRequired,
+            ], 402);
+        }
+
+        $connectorId = (int) ($request->input('connector_id') ?: ($station->connectors()->orderBy('connector_id')->value('connector_id') ?? 1));
+
+        $steve = app(SteveService::class);
+        $result = $steve->remoteStart($station->charge_box_id, $connectorId, $tag->tag_code, $user->id);
+        
         if (!$result['ok']) {
             return response()->json([
                 'message' => 'No se pudo iniciar la carga en SteVe',
                 'detail' => $result['detail'],
                 'status' => 'error',
             ], 502);
+        }
+
+        // 2. Create Transition Session (Starting)
+        // This record signals the App to show the "Iniciando" card
+        try {
+            ChargingSession::create([
+                'user_id' => $user->id,
+                'status' => 'Starting',
+                'station_id' => $station->id,
+                'connector_id' => $connectorId,
+                'rfid_tag_id' => $tag->id,
+                'tariff_id' => $station->tariff_id,
+                'start_time' => now(),
+                'total_energy_kwh' => 0.0,
+                'total_cost' => 0.0,
+                'currency' => $station->tariff->currency ?? 'USD',
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Transition session creation failed', ['error' => $e->getMessage()]);
         }
 
         // Notify the user
@@ -82,7 +184,7 @@ class ChargingSessionController extends Controller
         if (!$txId) {
             $active = DB::connection('steve')
                 ->table('transaction as t')
-                ->join('connector as c', 'c.connector_pk', '=', 't.connector_connector_pk')
+                ->join('connector as c', 'c.connector_pk', '=', 't.connector_pk')
                 ->where('c.charge_box_id', $station->charge_box_id)
                 ->whereNull('t.stop_timestamp')
                 ->orderByDesc('t.start_timestamp')
@@ -99,7 +201,9 @@ class ChargingSessionController extends Controller
             ], 404);
         }
 
-        $result = $this->remoteStop($station->charge_box_id, (int) $txId);
+        $steve = app(SteveService::class);
+        $result = $steve->remoteStop($station->charge_box_id, (int) $txId, $request->user()->id);
+        
         if (!$result['ok']) {
             return response()->json([
                 'message' => 'No se pudo detener la carga en SteVe',
@@ -127,137 +231,28 @@ class ChargingSessionController extends Controller
         ]);
     }
 
-    private function remoteStart(string $chargeBoxId, string $idTag, int $connectorId): array
+    public function cancel(Request $request, ChargingSession $session)
     {
-        try {
-            [$jar, $csrf, $baseUrl, $chargePointSelectValue] = $this->loginAndResolveChargePoint($chargeBoxId);
-
-            $paths = [
-                '/manager/operations/v1.6/RemoteStartTransaction',
-                '/manager/operations/v1.5/RemoteStartTransaction',
-                '/manager/operations/v1.2/RemoteStartTransaction',
-            ];
-
-            foreach ($paths as $path) {
-                $url = $baseUrl . $path;
-                $formResp = Http::withOptions(['cookies' => $jar])->get($url);
-                if (!$formResp->ok()) {
-                    continue;
-                }
-
-                $formCsrf = $this->extractCsrfToken($formResp->body()) ?: $csrf;
-
-                $postResp = Http::withOptions(['cookies' => $jar, 'allow_redirects' => false])
-                    ->asForm()
-                    ->post($url, [
-                        'chargePointSelectList' => $chargePointSelectValue,
-                        'idTag' => $idTag,
-                        'connectorId' => $connectorId,
-                        '_csrf' => $formCsrf,
-                    ]);
-
-                if (in_array($postResp->status(), [302, 303], true)) {
-                    return ['ok' => true, 'detail' => $path];
-                }
-            }
-
-            return ['ok' => false, 'detail' => 'RemoteStart failed on all operation paths'];
-        } catch (\Throwable $e) {
-            Log::error('RemoteStart exception', ['error' => $e->getMessage()]);
-            return ['ok' => false, 'detail' => $e->getMessage()];
-        }
-    }
-
-    private function remoteStop(string $chargeBoxId, int $txId): array
-    {
-        try {
-            [$jar, $csrf, $baseUrl, $chargePointSelectValue] = $this->loginAndResolveChargePoint($chargeBoxId);
-
-            $paths = [
-                '/manager/operations/v1.6/RemoteStopTransaction',
-                '/manager/operations/v1.5/RemoteStopTransaction',
-                '/manager/operations/v1.2/RemoteStopTransaction',
-            ];
-
-            foreach ($paths as $path) {
-                $url = $baseUrl . $path;
-                $formResp = Http::withOptions(['cookies' => $jar])->get($url);
-                if (!$formResp->ok()) {
-                    continue;
-                }
-
-                $formCsrf = $this->extractCsrfToken($formResp->body()) ?: $csrf;
-
-                $postResp = Http::withOptions(['cookies' => $jar, 'allow_redirects' => false])
-                    ->asForm()
-                    ->post($url, [
-                        'chargePointSelectList' => $chargePointSelectValue,
-                        'transactionId' => $txId,
-                        '_csrf' => $formCsrf,
-                    ]);
-
-                if (in_array($postResp->status(), [302, 303], true)) {
-                    return ['ok' => true, 'detail' => $path];
-                }
-            }
-
-            return ['ok' => false, 'detail' => 'RemoteStop failed on all operation paths'];
-        } catch (\Throwable $e) {
-            Log::error('RemoteStop exception', ['error' => $e->getMessage()]);
-            return ['ok' => false, 'detail' => $e->getMessage()];
-        }
-    }
-
-    private function loginAndResolveChargePoint(string $chargeBoxId): array
-    {
-        $baseUrl = rtrim(env('STEVE_MANAGER_URL', 'http://127.0.0.1:8081'), '/');
-        $user = env('STEVE_MANAGER_USER', 'mgr_api');
-        $pass = env('STEVE_MANAGER_PASS', 'Mgr#742913');
-
-        $cb = DB::connection('steve')->table('charge_box')->where('charge_box_id', $chargeBoxId)->first();
-        if (!$cb) {
-            throw new \RuntimeException("ChargeBox {$chargeBoxId} no encontrado en SteVe");
+        if ($session->user_id !== $request->user()->id) {
+            return response()->json(['message' => 'No autorizado'], 403);
         }
 
-        $ocppProtocol = $cb->ocpp_protocol ?? 'ocpp1.6J';
-        $endpointAddress = $cb->endpoint_address ?? '-';
-        $ocppToken = str_contains(strtolower($ocppProtocol), '16') ? 'V_16_JSON'
-            : (str_contains(strtolower($ocppProtocol), '15') ? 'V_15_JSON' : 'V_12_JSON');
-        $chargePointSelectValue = $ocppToken . ';' . $chargeBoxId . ';' . ($endpointAddress ?: '-');
-
-        $jar = new CookieJar();
-        $signinUrl = $baseUrl . '/manager/signin';
-        $signinResp = Http::withOptions(['cookies' => $jar])->get($signinUrl);
-        if (!$signinResp->ok()) {
-            throw new \RuntimeException('No se pudo abrir sign-in de SteVe manager');
+        if ($session->status !== 'Starting') {
+            return response()->json([
+                'message' => 'Solo se pueden cancelar sesiones en estado de inicio.',
+                'current_status' => $session->status
+            ], 422);
         }
 
-        $csrf = $this->extractCsrfToken($signinResp->body());
-        if (!$csrf) {
-            throw new \RuntimeException('No se pudo extraer CSRF token en sign-in');
-        }
+        $session->update([
+            'status' => 'Failed',
+            'stop_time' => now(),
+            'stop_reason' => 'UserCancelled'
+        ]);
 
-        $loginResp = Http::withOptions(['cookies' => $jar, 'allow_redirects' => false])
-            ->asForm()
-            ->post($signinUrl, [
-                'username' => $user,
-                'password' => $pass,
-                '_csrf' => $csrf,
-            ]);
-
-        if (!in_array($loginResp->status(), [302, 303], true)) {
-            throw new \RuntimeException('Login de SteVe manager falló');
-        }
-
-        return [$jar, $csrf, $baseUrl, $chargePointSelectValue];
-    }
-
-    private function extractCsrfToken(string $html): ?string
-    {
-        if (preg_match('/name="_csrf" value="([^"]+)"/', $html, $m)) {
-            return $m[1];
-        }
-
-        return null;
+        return response()->json([
+            'message' => 'Solicitud de inicio cancelada exitosamente.',
+            'status' => 'cancelled'
+        ]);
     }
 }

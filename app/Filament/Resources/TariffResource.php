@@ -14,7 +14,7 @@ class TariffResource extends Resource
 {
     protected static ?string $model = Tariff::class;
     protected static ?string $navigationIcon = 'heroicon-o-currency-dollar';
-    protected static ?string $navigationGroup = 'Business';
+    protected static ?string $navigationGroup = 'Negocio';
 
     public static function form(Form $form): Form
     {
@@ -33,18 +33,27 @@ class TariffResource extends Resource
                                         'BOB' => 'BOB (Bs)',
                                         'EUR' => 'EUR (€)',
                                     ])
-                                    ->default('USD')
+                                    ->default('BOB')
                                     ->required(),
                                 Forms\Components\TextInput::make('price_session')
                                     ->label('Connection Fee')
                                     ->numeric()
                                     ->default(0)
-                                    ->prefix('$'),
+                                    ->prefix('Bs'),
+                                Forms\Components\Toggle::make('is_parking_fee_enabled')
+                                    ->label('¿Habilitar Fee de Parqueo?')
+                                    ->default(true)
+                                    ->helperText('Si se desactiva, no se cobrará el cargo inicial.'),
+
                                 Forms\Components\TextInput::make('free_minutes')
                                     ->label('Grace Period')
                                     ->numeric()
                                     ->default(0)
                                     ->suffix('min'),
+                                Forms\Components\Toggle::make('is_time_fee_enabled')
+                                    ->label('¿Habilitar Fee de Tiempo?')
+                                    ->default(true)
+                                    ->helperText('Si se desactiva, no se aplicarán multas por tiempo.'),
 
                                 Forms\Components\DateTimePicker::make('valid_from')
                                     ->label('Tariff valid from')
@@ -57,6 +66,29 @@ class TariffResource extends Resource
                                     ->after('valid_from')
                                     ->helperText('Optional. If empty, tariff has no end date.'),
                             ])->columns(2),
+
+                        Forms\Components\Section::make('Vínculo con Productos SIAT')
+                            ->description('Seleccione los productos oficiales que aparecerán en la factura para cada ítem de esta tarifa.')
+                            ->schema([
+                                Forms\Components\Select::make('energy_product_id')
+                                    ->label('Producto de Energía')
+                                    ->relationship('energyProduct', 'name')
+                                    ->searchable()
+                                    ->preload()
+                                    ->required(),
+                                Forms\Components\Select::make('connection_product_id')
+                                    ->label('Producto Connection Fee')
+                                    ->relationship('connectionProduct', 'name')
+                                    ->searchable()
+                                    ->preload()
+                                    ->required(),
+                                Forms\Components\Select::make('time_product_id')
+                                    ->label('Producto Time Penalty')
+                                    ->relationship('timeProduct', 'name')
+                                    ->searchable()
+                                    ->preload()
+                                    ->required(),
+                            ]),
                     ])->columnSpan(1),
 
                 Forms\Components\Group::make()
