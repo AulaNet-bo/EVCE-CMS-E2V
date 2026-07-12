@@ -14,11 +14,11 @@ class Tariff extends Model
     protected static function booted(): void
     {
         static::updating(function (Tariff $tariff) {
-            if ($tariff->isExpired()) {
-                throw ValidationException::withMessages([
-                    'tariff' => 'Expired tariffs cannot be modified.',
-                ]);
-            }
+            // if ($tariff->isExpired()) {
+            //     throw ValidationException::withMessages([
+            //         'tariff' => 'Expired tariffs cannot be modified.',
+            //     ]);
+            // }
 
             if ($tariff->hasBeenUsed()) {
                 $dirty = array_keys($tariff->getDirty());
@@ -59,6 +59,10 @@ class Tariff extends Model
         'valid_from' => 'datetime',
         'valid_until' => 'datetime',
         'is_parking_fee_enabled' => 'boolean',
+        'apply_fee_to_cards' => 'boolean',
+        'apply_fee_to_app' => 'boolean',
+        'apply_discount_to_cards' => 'boolean',
+        'apply_discount_to_app' => 'boolean',
         'is_time_fee_enabled' => 'boolean',
     ];
 
@@ -68,12 +72,19 @@ class Tariff extends Model
         'cost_price_kwh', // Base Utility Cost (Deprecated in favor of blocks, but kept for legacy)
         'price_session',
         'is_parking_fee_enabled',
+        'apply_fee_to_cards',
+        'apply_fee_to_app',
         'free_minutes',
         'valid_from',
         'valid_until',
         // Block 1
         'b1_start', 'b1_end', 'b1_price_kwh', 'b1_cost_kwh', 'b1_price_min',
         'is_time_fee_enabled',
+        'discount_fixed_amount',
+        'apply_discount_to_cards',
+        'apply_discount_to_app',
+        'target_soc',
+        'soc_reached_message',
         // Block 2
         'b2_start', 'b2_end', 'b2_price_kwh', 'b2_cost_kwh', 'b2_price_min',
         // Block 3
@@ -126,7 +137,8 @@ class Tariff extends Model
      */
     public function getCurrentPrices(): array
     {
-        $now = now()->format('H:i:s');
+        // Always evaluate current time in the local timezone where tariffs are defined
+        $now = now()->setTimezone('America/La_Paz')->format('H:i:s');
 
         for ($i = 1; $i <= 4; $i++) {
             $start = $this->{"b{$i}_start"};

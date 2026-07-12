@@ -18,6 +18,11 @@ class ProductResource extends Resource
     protected static ?string $modelLabel = 'Producto';
     protected static ?string $pluralModelLabel = 'Productos';
 
+    public static function canViewAny(): bool
+    {
+        return auth()->user()?->hasAnyRole(['super_admin', 'staff_admin', 'sales']) ?? false;
+    }
+
     public static function form(Form $form): Form
     {
         return $form

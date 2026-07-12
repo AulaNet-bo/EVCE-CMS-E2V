@@ -9,6 +9,11 @@ class SteveDataSource
 {
     protected static $localCache = [];
 
+    public function clearCache()
+    {
+        static::$localCache = [];
+    }
+
     protected function redis()
     {
         $conn = Redis::connection('default');
@@ -60,8 +65,8 @@ class SteveDataSource
     {
         if (!$this->usingRedis()) {
             $baseItems = DB::connection('steve')
-                ->table('connector')
-                ->join('charge_box', 'connector.charge_box_id', '=', 'charge_box.charge_box_id')
+                ->table('charge_box')
+                ->leftJoin('connector', 'charge_box.charge_box_id', '=', 'connector.charge_box_id')
                 ->select(
                     'charge_box.charge_box_id',
                     'connector.connector_id',
@@ -159,9 +164,17 @@ class SteveDataSource
         }
 
         if (!$this->usingRedis()) {
-            $rows = DB::connection('steve')->table('connector_status')
+            $subQuery = DB::connection('steve')->table('connector_status')
+                ->select('connector_pk', DB::raw('MAX(status_timestamp) as max_ts'))
                 ->whereIn('connector_pk', $toFetch)
-                ->whereRaw('status_timestamp = (SELECT MAX(status_timestamp) FROM connector_status as cs2 WHERE cs2.connector_pk = connector_status.connector_pk)')
+                ->groupBy('connector_pk');
+
+            $rows = DB::connection('steve')->table('connector_status as cs1')
+                ->joinSub($subQuery, 'cs2', function ($join) {
+                    $join->on('cs1.connector_pk', '=', 'cs2.connector_pk')
+                         ->on('cs1.status_timestamp', '=', 'cs2.max_ts');
+                })
+                ->whereIn('cs1.connector_pk', $toFetch)
                 ->get();
 
             foreach ($rows as $row) {
@@ -516,6 +529,29 @@ class SteveDataSource
         }
 
         return $latest ? (object) $latest : null;
+    }
+
+    public function getLatestSocMeterValue(int $transactionPk): ?object
+    {
+        return $this->getLatestMeterValue($transactionPk, 'SoC');
+    }
+
+    public function getLatestPowerMeterValue(int $transactionPk): ?object
+    {
+        // Primary measurand for power (kW)
+        return $this->getLatestMeterValue($transactionPk, 'Power.Active.Import');
+    }
+
+    public function getEarliestSocMeterValue(int $transactionPk): ?object
+    {
+        if (!$this->usingRedis()) {
+            return DB::connection('steve')->table('connector_meter_value')
+                ->where('transaction_pk', $transactionPk)
+                ->where('measurand', 'SoC')
+                ->orderBy('value_timestamp', 'asc')
+                ->first();
+        }
+        return null;
     }
 
     public function getTagsForSync(int $limit = 500): array

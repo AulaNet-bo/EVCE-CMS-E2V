@@ -16,12 +16,17 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->trustProxies(at: '*');
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        //
+        $exceptions->shouldRenderJsonWhen(function ($request, $e) {
+            if ($request->is('api/*')) {
+                return true;
+            }
+
+            return $request->expectsJson();
+        });
     })
     ->withSchedule(function (\Illuminate\Console\Scheduling\Schedule $schedule) {
         $schedule->command('steve:sync-sessions')->everyMinute();
         $schedule->command('steve:sync-status')->everyMinute();
-        $schedule->command('steve:monitor-transactions')->everyMinute();
         $schedule->command('steve:sync-tags')->everyFiveMinutes();
     })
     ->create();

@@ -71,7 +71,7 @@ class WalletTransactionResource extends Resource
             ->columns([
                 Tables\Columns\TextColumn::make('created_at')
                     ->label('Date')
-                    ->dateTime('d M H:i')
+                    ->dateTime('d M H:i', 'America/La_Paz')
                     ->sortable(),
                 Tables\Columns\TextColumn::make('user.name')
                     ->label('Usuario')
@@ -119,7 +119,12 @@ class WalletTransactionResource extends Resource
                 Tables\Columns\TextColumn::make('payment_method')
                     ->label('Método')
                     ->badge()
-                    ->color('gray')
+                    ->color(fn(string $state): string => match ($state) {
+                        'CREDITO' => 'danger',
+                        'MANUAL_CASH' => 'success',
+                        'LIBELULA' => 'info',
+                        default => 'gray',
+                    })
                     ->searchable(),
             ])
             ->defaultSort('created_at', 'desc')
@@ -139,7 +144,7 @@ class WalletTransactionResource extends Resource
                         fn(WalletTransaction $record): bool =>
                         $record->status === 'PENDING' &&
                         $record->type === 'RECHARGE' &&
-                        auth()->user()->hasRole(['super_admin', 'system_accountant'])
+                        auth()->user()->hasRole(['super_admin', 'system_accountant', 'kiosko'])
                     )
                     ->action(function (WalletTransaction $record) {
                         $metadata = $record->metadata ?? [];
@@ -147,16 +152,27 @@ class WalletTransactionResource extends Resource
                         
                         $libService = app(\App\Services\LibelulaPaymentService::class);
 
-                        if ($shouldInvoice) {
+                        // If it has already been invoiced (has invoice_url), we don't invoice again!
+                        if ($shouldInvoice && empty($record->invoice_url)) {
                             // Use the specific MANUAL method that Rafael requested
                             $result = $libService->createManualInvoice(
                                 $record, 
                                 $record->amount, 
                                 $record->description ?: 'Recarga Manual Validada',
-                                $metadata['line_items'] ?? null
+                                $metadata['line_items'] ?? null,
+                                (float) ($metadata['global_discount'] ?? 0)
                             );
 
                             if ($result['success']) {
+                                // Mark as completed in CMS
+                                DB::transaction(function () use ($record) {
+                                    $record->update([
+                                        'status' => 'COMPLETED',
+                                        'invoice_url' => $result['invoice_url'] ?? $record->invoice_url,
+                                        'payment_method' => $record->payment_method === 'CREDITO' ? 'CREDITO' : 'CASH/MANUAL'
+                                    ]);
+                                });
+
                                 Notification::make()
                                     ->title('Pago Validado y Factura Emitida')
                                     ->success()
@@ -170,20 +186,24 @@ class WalletTransactionResource extends Resource
                                     ->send();
                             }
                         } else {
-                            // Regular manual completion without invoice
-                            DB::transaction(function () use ($record) {
+                            // Regular manual completion without invoice (or if invoice was already emitted)
+                            DB::transaction(function () use ($record, $metadata) {
                                 $wallet = $record->wallet;
-                                $wallet->increment('balance', $record->amount);
+                                $skipUpdate = $metadata['skip_wallet_update'] ?? false;
+                                
+                                if (!$skipUpdate) {
+                                    $wallet->increment('balance', $record->amount);
+                                }
 
                                 $record->update([
                                     'status' => 'COMPLETED',
                                     'balance_after' => $wallet->balance,
-                                    'payment_method' => 'CASH/MANUAL'
+                                    'payment_method' => $record->payment_method === 'CREDITO' ? 'CREDITO' : 'CASH/MANUAL'
                                 ]);
                             });
 
                             Notification::make()
-                                ->title('Pago Validado Correctamente')
+                                ->title($shouldInvoice ? 'Pago Validado (Factura ya emitida)' : 'Pago Validado Correctamente')
                                 ->success()
                                 ->send();
                         }

@@ -39,6 +39,15 @@ class SystemSetting extends Model
         'product_energy_id',
         'product_connection_id',
         'product_penalty_id',
+        'waive_parking_fee_for_cards',
+        'restrict_charging_without_vehicle',
+        'mail_host',
+        'mail_port',
+        'mail_encryption',
+        'mail_username',
+        'mail_password',
+        'mail_from_address',
+        'mail_from_name',
     ];
 
     /**

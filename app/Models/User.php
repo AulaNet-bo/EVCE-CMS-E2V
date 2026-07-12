@@ -22,12 +22,52 @@ class User extends Authenticatable implements \Filament\Models\Contracts\Filamen
             'staff_admin',
             'accountant',
             'sales',
+            'kiosko',
         ]);
+    }
+
+    protected static function booted()
+    {
+        static::deleting(function ($user) {
+            // 1. Anonymize charging sessions (keep data for financial audits, but detach personal identification)
+            \App\Models\ChargingSession::where('user_id', $user->id)->update([
+                'user_id' => null,
+                'rfid_tag_id' => null,
+            ]);
+
+            // 2. Safely manage RFID tags
+            // Delete associated virtual tags
+            \App\Models\RfidTag::where('user_id', $user->id)
+                ->where('is_virtual', true)
+                ->delete();
+
+            // Dissociate and deactivate physical tags so they are released for future users
+            \App\Models\RfidTag::where('user_id', $user->id)
+                ->where('is_virtual', false)
+                ->update([
+                    'user_id' => null,
+                    'is_active' => false,
+                ]);
+
+            // 3. Delete user's wallet (transactions cascade via DB foreign key onDelete('cascade'))
+            $user->wallet()?->delete();
+
+            // 4. Delete Sanctum API access tokens
+            $user->tokens()->delete();
+
+            // 5. Delete user's vehicles
+            $user->vehicles()->delete();
+        });
     }
 
     public function company(): \Illuminate\Database\Eloquent\Relations\BelongsTo
     {
         return $this->belongsTo(Company::class);
+    }
+
+    public function vehicles(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(Vehicle::class);
     }
 
     public function wallet(): \Illuminate\Database\Eloquent\Relations\HasOne

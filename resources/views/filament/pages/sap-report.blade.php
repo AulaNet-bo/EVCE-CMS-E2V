@@ -37,11 +37,16 @@
         'price_unit' => 'Precio Unit.',
         'total_amount' => 'Monto Total',
         'rfid_tag_id' => 'ID RFID',
+        'steve_transaction_id' => 'ID Transacción SteVe',
+        'wallet_transaction_id' => 'ID Transacción Billetera',
+        'charging_session_id' => 'ID Sesión Carga',
         'session_fee' => 'Tarifa Fija',
         'time_fee' => 'Tarifa Tiempo',
         'energy_cost' => 'Costo Energía',
         'utility_cost' => 'Costo Utilidad',
         'margin' => 'Margen',
+        'discount_amount' => 'Descuento',
+        'transaction_lines' => 'Detalle Transacción (JSON)',
     ];
 @endphp
     <x-filament::section>
@@ -49,6 +54,11 @@
             {{ $this->form }}
         </form>
     </x-filament::section>
+
+    <div class="text-sm text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-white/5 p-4 rounded-xl border border-gray-100 dark:border-white/10 flex items-center gap-2">
+        <span>💡</span>
+        <span><strong>Vista Previa Optimizada:</strong> Se muestran los <strong>150 registros más recientes</strong> para garantizar un rendimiento óptimo de carga de pantalla. El servicio de integración SAP en segundo plano sigue procesando la totalidad de los datos sin límites.</span>
+    </div>
 
     <x-filament::section>
         <div class="overflow-x-auto">
@@ -67,9 +77,13 @@
                 <tbody class="divide-y divide-gray-200 dark:divide-white/5">
                     @forelse($data as $row)
                         <tr class="hover:bg-gray-50 dark:hover:bg-white/5 transition-colors">
-                            @foreach($row as $value)
+                            @foreach($row as $key => $value)
                                 <td class="px-4 py-2 text-sm text-gray-600 dark:text-gray-300">
-                                    @if(is_array($value))
+                                    @if($key === 'transaction_lines')
+                                        <div class="max-w-md overflow-x-auto max-h-32 text-xs font-mono bg-gray-50 dark:bg-gray-900/50 p-2 rounded border border-gray-100 dark:border-white/10 whitespace-pre scrollbar-thin">
+                                            {{ is_array($value) ? json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) : $value }}
+                                        </div>
+                                    @elseif(is_array($value))
                                         {{ json_encode($value) }}
                                     @else
                                         {{ $value }}

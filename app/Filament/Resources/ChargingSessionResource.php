@@ -163,13 +163,13 @@ class ChargingSessionResource extends Resource
 
                 Tables\Columns\TextColumn::make('start_time')
                     ->label('Started')
-                    ->dateTime('d M H:i')
+                    ->dateTime('d M H:i', 'America/La_Paz')
                     ->sortable()
                     ->toggleable(),
 
                 Tables\Columns\TextColumn::make('stop_time')
                     ->label('Stopped')
-                    ->dateTime('d M H:i')
+                    ->dateTime('d M H:i', 'America/La_Paz')
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
             ])

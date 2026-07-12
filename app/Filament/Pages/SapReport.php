@@ -46,7 +46,7 @@ class SapReport extends Page implements HasForms
                     ->label('Tipo de Reporte')
                     ->options([
                         'customers' => 'Clientes',
-                        'payments' => 'Pagos (Wallet)',
+                        'payments' => 'Todas las Transacciones (Billetera)',
                         'sessions' => 'Sesiones de Carga',
                     ])
                     ->required()
@@ -65,13 +65,13 @@ class SapReport extends Page implements HasForms
 
         switch ($this->reportType) {
             case 'customers':
-                $this->data = $service->getCustomers()->toArray();
+                $this->data = $service->getCustomers(false, 150)->toArray();
                 break;
             case 'payments':
-                $this->data = $service->getPayments()->toArray();
+                $this->data = $service->getPayments(false, 150)->toArray();
                 break;
             case 'sessions':
-                $this->data = $service->getSessions()->toArray();
+                $this->data = $service->getSessions(false, 150)->toArray();
                 break;
             default:
                 $this->data = [];

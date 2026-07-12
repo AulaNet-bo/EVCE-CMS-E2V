@@ -52,6 +52,21 @@ class WalletController extends Controller
             ['balance' => 0, 'currency' => 'BOB', 'is_postpaid' => false, 'credit_limit' => 0]
         );
 
+        // AUTO-VERIFY PENDING LIBELULA TRANSACTIONS
+        $pendingTxs = DB::table('wallet_transactions')
+            ->where('wallet_id', $wallet->id)
+            ->where('status', 'PENDING')
+            ->where('payment_method', 'LIBELULA')
+            ->get();
+
+        if ($pendingTxs->isNotEmpty()) {
+            $libelula = app(\App\Services\LibelulaPaymentService::class);
+            foreach ($pendingTxs as $tx) {
+                $libelula->verifyStatus((int) $tx->id);
+            }
+            $wallet->refresh();
+        }
+
         $tags = RfidTag::where('user_id', $request->user()->id)
             ->select('id', 'tag_code', 'name', 'balance', 'currency', 'is_active', 'is_virtual', 'user_id')
             ->get();
@@ -99,7 +114,9 @@ class WalletController extends Controller
             ]);
         }
 
-        return response()->json($wallet->transactions()->latest()->paginate(50));
+        $transactions = $wallet->transactions()->latest()->paginate(50);
+        
+        return response()->json($transactions);
     }
 
     public function topup(Request $request)
@@ -111,6 +128,13 @@ class WalletController extends Controller
         ]);
 
         $user = $request->user();
+        if (empty($user->billing_document)) {
+            return response()->json([
+                'message' => 'Se requiere registrar un NIT/CI en su perfil para realizar recargas.',
+                'status' => 'billing_document_required',
+            ], 422);
+        }
+
         $amount = round((float) $request->input('amount'), 2);
 
         $wallet = Wallet::firstOrCreate(
@@ -130,7 +154,7 @@ class WalletController extends Controller
                 'type' => 'RECHARGE',
                 'amount' => $amount,
                 $refCol => $request->input('reference') ?: ('APP-RECHARGE-' . now()->format('YmdHis')),
-                'description' => $request->input('description', 'Recarga desde app móvil'),
+                'description' => $request->input('description', 'Recarga Wallet'),
                 'created_at' => now(),
                 'updated_at' => now(),
             ];
@@ -183,6 +207,14 @@ class WalletController extends Controller
 
         $user = $request->user();
 
+        $documento = $request->input('documento') ?: $user->billing_document;
+        if (empty($documento)) {
+            return response()->json([
+                'message' => 'Se requiere registrar un NIT/CI en su perfil para realizar recargas.',
+                'status' => 'billing_document_required',
+            ], 422);
+        }
+
         $docType = $request->input('doc_type') ?: $user->billing_doc_type;
         $complemento = ($docType === 'NIT') ? '' : ($request->input('complemento') ?? $user->billing_complement);
 
@@ -204,7 +236,7 @@ class WalletController extends Controller
         $result = $libelula->createPayment(
             $wallet,
             round((float) $request->input('amount'), 2),
-            $request->input('description', 'Recarga Wallet desde app móvil'),
+            $request->input('description', 'Recarga Wallet'),
             [
                 'razon_social' => $request->input('razon_social') ?: $user->billing_razon_social,
                 'documento' => $request->input('documento') ?: $user->billing_document,
@@ -290,5 +322,43 @@ class WalletController extends Controller
         DB::table('wallet_transactions')->where('id', $transactionId)->delete();
 
         return response()->json(['message' => 'Pendiente eliminado']);
+    }
+
+    public function downloadInvoice(Request $request, int $transactionId)
+    {
+        $user = $request->user();
+        
+        // Manual auth for direct link downloads if sanctum fails
+        if (!$user && $request->has('token')) {
+            $accessToken = \Laravel\Sanctum\PersonalAccessToken::findToken($request->query('token'));
+            if ($accessToken) {
+                $user = $accessToken->tokenable;
+            }
+        }
+
+        if (!$user) {
+            return response()->json(['message' => 'No autorizado'], 401);
+        }
+
+        $wallet = Wallet::where('user_id', $user->id)->first();
+        if (!$wallet) {
+             return response()->json(['message' => 'Billetera no encontrada'], 404);
+        }
+
+        $tx = \App\Models\WalletTransaction::where('id', $transactionId)
+            ->where('wallet_id', $wallet->id)
+            ->first();
+
+        if (!$tx) {
+            return response()->json(['message' => 'Transacción no encontrada'], 404);
+        }
+
+        $pdf = Pdf::loadView('pdf.wallet_history', [
+            'user' => $user,
+            'transactions' => [$tx], // Just this one
+            'is_single' => true,
+        ]);
+
+        return $pdf->download("Recibo_Pago_{$tx->id}.pdf");
     }
 }

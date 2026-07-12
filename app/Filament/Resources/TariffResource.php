@@ -43,7 +43,16 @@ class TariffResource extends Resource
                                 Forms\Components\Toggle::make('is_parking_fee_enabled')
                                     ->label('¿Habilitar Fee de Parqueo?')
                                     ->default(true)
-                                    ->helperText('Si se desactiva, no se cobrará el cargo inicial.'),
+                                    ->helperText('Si se desactiva, no se cobrará el cargo inicial a nadie.'),
+                                Forms\Components\Grid::make(2)
+                                    ->schema([
+                                        Forms\Components\Toggle::make('apply_fee_to_cards')
+                                            ->label('Aplicar Fee a Tarjetas')
+                                            ->default(false),
+                                        Forms\Components\Toggle::make('apply_fee_to_app')
+                                            ->label('Aplicar Fee a App Móvil')
+                                            ->default(true),
+                                    ])->visible(fn ($get) => $get('is_parking_fee_enabled')),
 
                                 Forms\Components\TextInput::make('free_minutes')
                                     ->label('Grace Period')
@@ -54,6 +63,40 @@ class TariffResource extends Resource
                                     ->label('¿Habilitar Fee de Tiempo?')
                                     ->default(true)
                                     ->helperText('Si se desactiva, no se aplicarán multas por tiempo.'),
+                                Forms\Components\TextInput::make('discount_fixed_amount')
+                                    ->label('Descuento Fijo (Bs)')
+                                    ->numeric()
+                                    ->default(0)
+                                    ->prefix('Bs')
+                                    ->helperText('Monto fijo de descuento aplicado al total de la sesión.'),
+                                Forms\Components\Grid::make(2)
+                                    ->schema([
+                                        Forms\Components\Toggle::make('apply_discount_to_cards')
+                                            ->label('Descuento a Tarjetas')
+                                            ->default(false),
+                                        Forms\Components\Toggle::make('apply_discount_to_app')
+                                            ->label('Descuento a App Móvil')
+                                            ->default(true),
+                                    ])->visible(fn ($get) => $get('discount_fixed_amount') > 0),
+
+                                Forms\Components\Section::make('Notificación de Carga Alcanzada')
+                                    ->description('Aviso automático al usuario cuando el vehículo llega a un nivel de batería específico.')
+                                    ->schema([
+                                        Forms\Components\Grid::make(2)
+                                            ->schema([
+                                                Forms\Components\TextInput::make('target_soc')
+                                                    ->label('SOC Objetivo (%)')
+                                                    ->numeric()
+                                                    ->default(80)
+                                                    ->suffix('%')
+                                                    ->helperText('Nivel de batería para disparar la notificación.'),
+                                                Forms\Components\Textarea::make('soc_reached_message')
+                                                    ->label('Mensaje de Notificación')
+                                                    ->placeholder('Tu vehículo ha llegado al {soc}% de carga. Tienes {minutes} minutos de cortesía para retirarlo sin cargos adicionales.')
+                                                    ->helperText('Variables disponibles: {soc}, {minutes}')
+                                                    ->columnSpanFull(),
+                                            ])
+                                    ]),
 
                                 Forms\Components\DateTimePicker::make('valid_from')
                                     ->label('Tariff valid from')

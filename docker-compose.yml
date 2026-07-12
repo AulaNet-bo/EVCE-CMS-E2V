@@ -12,8 +12,6 @@ services:
     networks:
       default:
       steve-java_default:
-      prod_network:
-        ipv4_address: 192.168.0.4
     ports:
       - "8080:8080"
     command: /bin/bash -c "php artisan serve --host=0.0.0.0 --port=8080"
@@ -28,6 +26,19 @@ services:
       - default
       - steve-java_default
 
+  steve-monitor-daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile.cms
+    container_name: steve-monitor-daemon
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    networks:
+      - default
+      - steve-java_default
+    command: php artisan steve:monitor-transactions --daemon
+
 volumes:
   redis-data:
     external: true
@@ -36,6 +47,4 @@ networks:
   default:
     name: steve-cms_default
   steve-java_default:
-    external: true
-  prod_network:
     external: true

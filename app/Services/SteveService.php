@@ -38,7 +38,8 @@ class SteveService
     {
         if ($lastHeartbeat) {
             $heartbeat = \Carbon\Carbon::parse($lastHeartbeat);
-            if ($heartbeat->diffInMinutes(now()) > 2) {
+            // Increased timeout to 30 minutes as some stations heartbeat less frequently
+            if ($heartbeat->diffInMinutes(now()) > 30) {
                 return 'Offline';
             }
         }

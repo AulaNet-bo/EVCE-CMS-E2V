@@ -27,6 +27,11 @@ class ClientResource extends Resource
 
     protected static ?string $navigationGroup = 'Usuarios';
 
+    public static function canViewAny(): bool
+    {
+        return auth()->user()?->hasAnyRole(['super_admin', 'staff_admin', 'sales', 'kiosko']) ?? false;
+    }
+
     public static function getEloquentQuery(): Builder
     {
         return parent::getEloquentQuery()->role('client');
@@ -50,6 +55,12 @@ class ClientResource extends Resource
                         Forms\Components\TextInput::make('phone')
                             ->label('Teléfono')
                             ->tel(),
+                        Forms\Components\TextInput::make('password')
+                            ->label('Nueva Contraseña (Dejar vacío para no cambiar)')
+                            ->password()
+                            ->dehydrated(fn ($state) => filled($state))
+                            ->dehydrateStateUsing(fn ($state) => bcrypt($state))
+                            ->maxLength(255),
                     ])->columns(2),
                 Forms\Components\Section::make('Facturación')
                     ->schema([
@@ -101,6 +112,28 @@ class ClientResource extends Resource
                                     ->label('Saldo Tarjeta')
                                     ->money('BOB'),
                             ])->columns(4)
+                    ]),
+
+                Infolists\Components\Section::make('Vehículos Registrados')
+                    ->schema([
+                        Infolists\Components\RepeatableEntry::make('vehicles')
+                            ->label('Vehículos del Cliente')
+                            ->schema([
+                                Infolists\Components\TextEntry::make('brand')
+                                    ->label('Marca')
+                                    ->weight('bold'),
+                                Infolists\Components\TextEntry::make('model')
+                                    ->label('Modelo'),
+                                Infolists\Components\TextEntry::make('plate')
+                                    ->label('Placa')
+                                    ->badge()
+                                    ->color('primary'),
+                                Infolists\Components\TextEntry::make('vin')
+                                    ->label('VIN/VID'),
+                                Infolists\Components\TextEntry::make('battery_capacity')
+                                    ->label('Capacidad Batería')
+                                    ->suffix(' kWh'),
+                            ])->columns(5)
                     ])
             ]);
     }
@@ -159,6 +192,7 @@ class ClientResource extends Resource
                             ->send();
                     }),
                 Tables\Actions\EditAction::make(),
+                Tables\Actions\DeleteAction::make(),
             ])
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([

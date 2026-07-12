@@ -15,4 +15,9 @@ class UserManual extends Page
     protected static ?string $title = 'Manual de Uso e Integración';
 
     protected static string $view = 'filament.pages.user-manual';
+
+    public static function canAccess(): bool
+    {
+        return auth()->user()?->hasAnyRole(['super_admin', 'staff_admin', 'sales', 'accountant']) ?? false;
+    }
 }

@@ -27,6 +27,11 @@ class SyncMonitor extends Page implements HasTable
 
     protected static string $view = 'filament.pages.sync-monitor';
 
+    public static function canAccess(): bool
+    {
+        return auth()->user()?->hasAnyRole(['super_admin', 'staff_admin']) ?? false;
+    }
+
     public function getHeaderWidgets(): array
     {
         return [];

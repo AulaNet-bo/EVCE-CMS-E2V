@@ -11,9 +11,11 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::table('system_settings', function (Blueprint $table) {
-            $table->string('libelula_product_code')->default('1')->after('libelula_canal_usuario');
-        });
+        if (!Schema::hasColumn('system_settings', 'libelula_product_code')) {
+            Schema::table('system_settings', function (Blueprint $table) {
+                $table->string('libelula_product_code')->default('1');
+            });
+        }
     }
 
     /**

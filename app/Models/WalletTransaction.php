@@ -54,4 +54,18 @@ class WalletTransaction extends Model
     {
         return $this->belongsTo(Wallet::class);
     }
+
+    public function session(): BelongsTo
+    {
+        return $this->belongsTo(ChargingSession::class, 'reference_id', 'transaction_id');
+    }
+
+    /**
+     * Prepare a date for array / JSON serialization.
+     * Force La Paz time so the mobile app reads it correctly without doing conversions.
+     */
+    protected function serializeDate(\DateTimeInterface $date)
+    {
+        return \Carbon\Carbon::instance($date)->setTimezone('America/La_Paz')->format('Y-m-d H:i:s');
+    }
 }

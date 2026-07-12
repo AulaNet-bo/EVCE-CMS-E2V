@@ -64,8 +64,10 @@ class ConnectorsRelationManager extends RelationManager
                     ->badge()
                     ->color(fn(string $state): string => match ($state) {
                         'Available' => 'success',
-                        'Occupied', 'Charging' => 'warning',
+                        'Charging', 'Occupied' => 'warning',
+                        'Preparing', 'Finishing' => 'info',
                         'Faulted' => 'danger',
+                        'Offline', 'Unavailable' => 'gray',
                         default => 'gray',
                     }),
             ])

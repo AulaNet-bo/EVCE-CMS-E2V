@@ -29,6 +29,7 @@ class MonitorActiveTransactions extends Command
         $isDaemon = $this->option('daemon');
 
         do {
+            $source->clearCache();
             $this->info("🔍 Scanning ALL transactions (Active & Recently Completed) in Steve ({$source->source()})...");
 
             try {
@@ -46,7 +47,7 @@ class MonitorActiveTransactions extends Command
             }
 
             if ($isDaemon) {
-                sleep(2);
+                sleep(5);
             }
         } while ($isDaemon);
     }
@@ -54,133 +55,204 @@ class MonitorActiveTransactions extends Command
     private function processTransaction($tx, SteveDataSource $source, BillingService $billing, SteveService $steve)
     {
         $txId = $tx->transaction_pk ?? $tx->id;
-        $tagCode = $tx->id_tag ?? null;
-        $startTimestamp = $tx->start_timestamp ?? null;
-        $stopTimestamp = $tx->stop_timestamp ?? null;
-        $stopValue = $tx->stop_value ?? null;
-        $stopReason = $tx->stop_reason ?? null;
 
-        $existingSession = ChargingSession::where('transaction_id', (string)$txId)
-            ->where('status', '!=', 'Starting')
-            ->first();
+        // Command-level transaction lock to prevent concurrent double processing using atomic Redis store
+        $lock = \Illuminate\Support\Facades\Cache::store('redis')->lock('process_tx_' . $txId, 30);
 
-        // --- Collision Detection ---
-        if ($existingSession) {
-            $steveStart = \Carbon\Carbon::parse($startTimestamp);
-            $cmsStart = \Carbon\Carbon::parse($existingSession->start_time);
-            
-            // If the transaction ID is the same but the start date is more than 24 hours apart, 
-            // it's a collision from a legacy SteVe database or a reset.
-            if (abs($steveStart->diffInHours($cmsStart, false)) > 24) {
-                $this->warn("⚠️ Collision detected for Tx #{$txId}. CMS Session ID {$existingSession->id} is from {$cmsStart}, but SteVe reports {$steveStart}. Ignoring old record.");
-                $existingSession = null;
-            }
-        }
-
-        if ($existingSession && $existingSession->status === 'Completed') {
-            $this->line("↪️  Tx #{$txId} already completed in CMS.");
+        if (!$lock->get()) {
+            $this->warn("   ⏳ Tx #{$txId} is locked by another process. Skipping.");
             return;
         }
 
-        $this->line("👉 Analyzing Tx #{$txId} (Tag: {$tagCode})");
-
-        // 1. Identify User & Wallet (Case-Insensitive match)
-        $tag = RfidTag::whereRaw('LOWER(tag_code) = ?', [strtolower(trim($tagCode))])->first();
-        $userId = $tag?->user_id;
-
-        // 2. Determine Consumption (kWh)
-        $isCompleted = !is_null($stopTimestamp);
-        if ($isCompleted) {
-            $currentWh = floatval($stopValue);
-        } else {
-            $lastEnergyMeter = $source->getLatestEnergyMeterValue((int) $txId);
-            $currentWh = $lastEnergyMeter ? floatval($lastEnergyMeter->value) : 0;
-        }
-
-        $startWh = floatval($tx->start_value ?? 0);
-        $consumedKwh = max(0, ($currentWh - $startWh) / 1000);
-
-        // 3. Resolve Station and Connector
-        $connector = $source->getConnectorByPk((int) ($tx->connector_pk ?? 0));
-        $chargeBoxId = $connector->charge_box_id ?? 'Unknown';
-        $station = Station::where('charge_box_id', $chargeBoxId)->first();
-        
-        // CMS-side connector lookup
-        $cmsConnector = \App\Models\Connector::where('connector_pk', $tx->connector_pk)->first();
-        
-        // 4. Resolve Applicable Tariff
-        $tariff = \App\Models\Tariff::resolveForStation($station, $startTimestamp);
-
-        // 5. Update/Create ChargingSession in CMS
-        if (!$existingSession) {
-            // Adoption logic for 'Starting' sessions
-            // We search by Station AND (RFID Tag OR User) to be more flexible with App-started sessions
-            $existingSession = ChargingSession::where('status', 'Starting')
-                ->where('station_id', $station->id ?? 0)
-                ->where(function($q) use ($tag, $userId) {
-                    $q->where('rfid_tag_id', $tag?->id)
-                      ->when($userId, fn($qq) => $qq->orWhere('user_id', $userId));
-                })
-                ->orderByDesc('created_at')
-                ->first();
-        }
-
-        $session = ChargingSession::updateOrCreate(
-            ['id' => $existingSession?->id ?? 0],
-            [
-                'transaction_id' => (string)$txId,
-                'station_id' => $station->id ?? 1,
-                'connector_id' => $cmsConnector?->id ?? 1,
-                'user_id' => $userId,
-                'rfid_tag_id' => $tag?->id,
-                'tariff_id' => $tariff?->id,
-                'total_energy_kwh' => $consumedKwh,
-                'start_time' => $startTimestamp,
-                'stop_time' => $stopTimestamp,
-                'meter_start' => $startWh,
-                'meter_stop' => $currentWh,
-                'status' => $isCompleted ? 'Completed' : 'Active',
-            ]
-        );
-
-        // 5. Initial Fee Processing (If not debited yet)
-        if ($session->wasRecentlyCreated || (float)$session->debited_amount == 0) {
-            $billing->processInitialFee($session);
-        }
-
-        // 6. Calculate Cost and Billing
-        $pricing = $billing->calculateSessionCost($session, $consumedKwh, $isCompleted ? \Carbon\Carbon::parse($stopTimestamp) : null);
-
-        if (!$isCompleted) {
-            $ok = $billing->processIncrementalDebit($session, $pricing);
-            if (!$ok) {
-                $this->error("   🛑 INSUFFICIENT FUNDS! Sending RemoteStop...");
-                $steve->remoteStop($chargeBoxId, (int)$txId);
-                $session->update(['status' => 'CreditStopped', 'stop_reason' => 'CreditLimitExceeded']);
-            }
-        } else {
-            $billing->finalizeBilling($session);
-        }
-
-        $session->save();
-
-        // --- Real-time Sync to Firebase ---
-        // This ensures the App sees the 'Charging' status instantly (<10s)
         try {
-            $firebaseStatus = $isCompleted ? 'AVAILABLE' : 'CHARGING';
-            \App\Services\FirebaseService::syncStationData($chargeBoxId, [
-                'status' => $firebaseStatus,
-                'connectors' => [
-                    (string)$cmsConnector?->connector_id => [
-                        'status' => $firebaseStatus
-                    ]
-                ]
-            ]);
-        } catch (\Throwable $e) {
-            Log::error("Firebase sync failed in monitor: " . $e->getMessage());
-        }
+            $tagCode = $tx->id_tag ?? null;
+            $startTimestamp = $tx->start_timestamp ?? null;
+            $stopTimestamp = $tx->stop_timestamp ?? null;
+            $stopValue = $tx->stop_value ?? null;
+            $stopReason = $tx->stop_reason ?? null;
 
-        $this->line("   ✅ Synced Tx #{$txId}: " . ($isCompleted ? "Completed" : "Active") . " | {$consumedKwh} kWh | \${$pricing['total']}");
+            $existingSession = ChargingSession::where('transaction_id', (string)$txId)
+                ->where('status', '!=', 'Starting')
+                ->first();
+
+            // --- Collision Detection ---
+            if ($existingSession) {
+                $steveStart = \Carbon\Carbon::parse($startTimestamp);
+                $cmsStart = \Carbon\Carbon::parse($existingSession->start_time);
+                
+                // If the transaction ID is the same but the start date is more than 24 hours apart, 
+                // it's a collision from a legacy SteVe database or a reset.
+                if (abs($steveStart->diffInHours($cmsStart, false)) > 24) {
+                    $this->warn("⚠️ Collision detected for Tx #{$txId}. CMS Session ID {$existingSession->id} is from {$cmsStart}, but SteVe reports {$steveStart}. Renaming old record to avoid collision.");
+                    
+                    // Rename the old transaction ID to free it up for the new one
+                    $existingSession->update(['transaction_id' => "{$txId}-OLD-COLLISION-" . $existingSession->id]);
+                    
+                    $existingSession = null;
+                }
+            }
+
+            if ($existingSession && $existingSession->status === 'Completed') {
+                $this->line("↪️  Tx #{$txId} already completed in CMS.");
+                return;
+            }
+
+            $this->line("👉 Analyzing Tx #{$txId} (Tag: {$tagCode})");
+
+            // 1. Identify User & Wallet (Case-Insensitive match)
+            $tag = RfidTag::whereRaw('LOWER(tag_code) = ?', [strtolower(trim($tagCode))])->first();
+            $userId = $tag?->user_id;
+
+            // 2. Determine Consumption (kWh)
+            $isCompleted = !is_null($stopTimestamp);
+            if ($isCompleted) {
+                $currentWh = floatval($stopValue);
+            } else {
+                $lastEnergyMeter = $source->getLatestEnergyMeterValue((int) $txId);
+                $currentWh = $lastEnergyMeter ? floatval($lastEnergyMeter->value) : 0;
+            }
+
+            $startWh = floatval($tx->start_value ?? 0);
+            $consumedKwh = max(0, ($currentWh - $startWh) / 1000);
+
+            // 3. Resolve Station and Connector
+            $connector = $source->getConnectorByPk((int) ($tx->connector_pk ?? 0));
+            $chargeBoxId = $connector->charge_box_id ?? 'Unknown';
+            $station = Station::where('charge_box_id', $chargeBoxId)->first();
+            
+            // CMS-side connector lookup
+            $cmsConnector = \App\Models\Connector::where('connector_pk', $tx->connector_pk)->first();
+            
+            // 4. Resolve Applicable Tariff
+            $tariff = \App\Models\Tariff::resolveForStation($station, $startTimestamp);
+
+            // 5. Update/Create ChargingSession in CMS
+            if (!$existingSession) {
+                // Adoption logic for 'Starting' sessions
+                // Search by Charge Box ID and Tag/User
+                $existingSession = ChargingSession::where('status', 'Starting')
+                    ->whereHas('station', function($q) use ($chargeBoxId) {
+                        $q->where('charge_box_id', $chargeBoxId);
+                    })
+                    ->where(function($q) use ($tag, $userId) {
+                        $q->where('rfid_tag_id', $tag?->id)
+                          ->when($userId, fn($qq) => $qq->orWhere('user_id', $userId));
+                    })
+                    ->orderByDesc('created_at')
+                    ->first();
+                    
+                if ($existingSession) {
+                    $this->info("🤝 Adopting existing 'Starting' session #{$existingSession->id} for Tx #{$txId}");
+                }
+            }
+
+            $session = ChargingSession::updateOrCreate(
+                ['id' => $existingSession?->id ?? 0],
+                [
+                    'transaction_id' => (string)$txId,
+                    'station_id' => $station->id ?? 1,
+                    'connector_id' => $cmsConnector?->id ?? 1,
+                    'user_id' => $userId,
+                    'rfid_tag_id' => $tag?->id,
+                    'tariff_id' => $tariff?->id,
+                    'total_energy_kwh' => max($existingSession?->total_energy_kwh ?? 0, $consumedKwh),
+                    'start_time' => $startTimestamp,
+                    'stop_time' => $stopTimestamp,
+                    'meter_start' => $startWh,
+                    'meter_stop' => $currentWh,
+                    'status' => $isCompleted ? 'Completed' : 'Active',
+                ]
+            );
+            
+            // --- SoC Tracking ---
+            if (is_null($session->start_soc)) {
+                $earliestSoc = $source->getEarliestSocMeterValue((int) $txId);
+                if ($earliestSoc) {
+                    $session->start_soc = (int) $earliestSoc->value;
+                }
+            }
+            
+            $latestSoc = $source->getLatestSocMeterValue((int) $txId);
+            if ($latestSoc) {
+                $session->current_soc = (int) $latestSoc->value;
+                if ($isCompleted) {
+                    $session->stop_soc = (int) $latestSoc->value;
+                }
+                
+                // SoC Notification Logic
+                if (!$isCompleted && $session->user_id && $tariff && is_null($session->soc_notification_sent_at)) {
+                    $targetSoc = (int) ($tariff->target_soc ?? 80);
+                    if ($session->current_soc >= $targetSoc) {
+                        $this->sendSocNotification($session, $tariff);
+                    }
+                }
+            }
+
+            $currentPower = 0;
+            $latestPower = $source->getLatestPowerMeterValue((int) $txId);
+            if ($latestPower) {
+                $currentPower = round((float)$latestPower->value / 1000, 2); // Convert W to kW if necessary, or keep as is if already kW
+                // Note: SteVe usually stores Power in Watts. We'll assume Watts and convert to kW.
+            }
+
+            // 5. Initial Fee Processing (If not debited yet based on debited_amount and session_fee)
+            $initialFeeProcessed = ((float)$session->debited_amount > 0 || (float)$session->session_fee > 0);
+            if ($session->wasRecentlyCreated || !$initialFeeProcessed) {
+                $ok = $billing->processInitialFee($session);
+                if (!$ok) {
+                    $this->error("   🛑 INSUFFICIENT FUNDS FOR INITIAL FEE! Sending RemoteStop...");
+                    $steve->remoteStop($chargeBoxId, (int)$txId);
+                    $session->update(['status' => 'CreditStopped', 'stop_reason' => 'CreditLimitExceeded']);
+                    $lock->release();
+                    return;
+                }
+                $session->refresh(); // CRITICAL: Ensure debited_amount is updated in this object to avoid double charge in the next step
+            }
+
+            // 6. Calculate Cost and Billing
+            $pricing = $billing->calculateSessionCost($session, $consumedKwh, $isCompleted ? \Carbon\Carbon::parse($stopTimestamp) : null);
+
+            if (!$isCompleted) {
+                $ok = $billing->processIncrementalDebit($session, $pricing);
+                if (!$ok) {
+                    $this->error("   🛑 INSUFFICIENT FUNDS! Sending RemoteStop...");
+                    $steve->remoteStop($chargeBoxId, (int)$txId);
+                    $session->update(['status' => 'CreditStopped', 'stop_reason' => 'CreditLimitExceeded']);
+                }
+                $session->refresh(); // CRITICAL: Get the updated total_cost and debited_amount from DB
+            } else {
+                $billing->finalizeBilling($session);
+                $session->refresh();
+            }
+
+            // 7. Update other metrics that might have changed
+            $session->total_energy_kwh = $consumedKwh;
+            $session->meter_stop = $currentWh;
+            $session->save();
+
+            // --- Real-time Sync to Firebase ---
+            try {
+                $firebaseStatus = $isCompleted ? 'AVAILABLE' : 'CHARGING';
+                \App\Services\FirebaseService::syncStationData($chargeBoxId, [
+                    'status' => $firebaseStatus,
+                    'connectors' => [
+                        (string)$cmsConnector?->connector_id => [
+                            'status' => $firebaseStatus,
+                            'current_power_kw' => $currentPower,
+                            'current_soc' => $session->current_soc,
+                            'total_energy_kwh' => $consumedKwh,
+                            'total_cost' => $pricing['total'],
+                        ]
+                    ]
+                ]);
+            } catch (\Throwable $e) {
+                Log::error("Firebase sync failed in monitor: " . $e->getMessage());
+            }
+
+            $this->line("   ✅ Synced Tx #{$txId}: " . ($isCompleted ? "Completed" : "Active") . " | {$consumedKwh} kWh | \${$pricing['total']}");
+        } finally {
+            $lock->release();
+        }
     }
 
     private function cleanupStuckSessions()
@@ -208,6 +280,39 @@ class MonitorActiveTransactions extends Command
             }
             
             $this->warn("🧹 Cleaned up stuck session #{$session->id} for User #{$session->user_id}");
+        }
+    }
+
+    private function sendSocNotification(ChargingSession $session, Tariff $tariff)
+    {
+        $user = $session->user;
+        if (!$user) return;
+
+        $soc = $session->current_soc;
+        $minutes = (int) ($tariff->free_minutes ?? 0);
+        
+        $defaultMsg = "Tu vehículo ha llegado al {$soc}% de carga. Tienes {$minutes} minutos de cortesía para retirarlo sin cargos adicionales por parqueo.";
+        $customMsg = $tariff->soc_reached_message;
+
+        if ($customMsg) {
+            $msg = str_replace(['{soc}', '{minutes}'], [$soc, $minutes], $customMsg);
+        } else {
+            $msg = $defaultMsg;
+        }
+
+        try {
+            $user->notify(new \App\Notifications\GeneralNotification(
+                'Carga Alcanzada',
+                $msg,
+                ['type' => 'SOC_REACHED', 'session_id' => $session->id, 'soc' => $soc]
+            ));
+            
+            $session->soc_notification_sent_at = now();
+            $session->save();
+            
+            $this->info("📧 SoC Notification sent to User #{$user->id} for Session #{$session->id} ({$soc}%)");
+        } catch (\Throwable $e) {
+            Log::error("Failed to send SoC notification", ['error' => $e->getMessage()]);
         }
     }
 }

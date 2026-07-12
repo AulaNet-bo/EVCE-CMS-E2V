@@ -86,7 +86,12 @@ class BulkRfidManager extends Page
                                     ->numeric()
                                     ->default(0)
                                     ->required(),
-                            ])->columns(2),
+                                TextInput::make('recharge_discount')
+                                    ->label('Descuento de Recarga (BOB)')
+                                    ->numeric()
+                                    ->default(0)
+                                    ->required(),
+                            ])->columns(3),
 
                         Select::make('assignment_type')
                             ->label('Tipo de Asignación')
@@ -134,13 +139,23 @@ class BulkRfidManager extends Page
                                 
                                 Select::make('payment_method')
                                     ->label('Método de Pago')
-                                    ->options([
+                                    ->options(fn (callable $get) => $get('emit_invoice') ? [
                                         'manual' => 'Efectivo / Manual (Caja)',
                                         'libelula' => 'Pasarela de Pago (QR/Tarjeta)',
+                                        'credit' => 'A Crédito (Activa saldo de inmediato)',
+                                    ] : [
+                                        'manual' => 'Efectivo / Manual (Caja)',
+                                        'credit' => 'A Crédito (Activa saldo de inmediato)',
                                     ])
                                     ->default('manual')
+                                    ->required(),
+                                
+                                TextInput::make('global_discount')
+                                    ->label('Descuento Global (BOB)')
+                                    ->numeric()
+                                    ->default(0)
                                     ->required()
-                                    ->visible(fn(callable $get) => $get('emit_invoice')),
+                                    ->helperText('Descuento adicional aplicado al total de la factura (SIAT).'),
                             ])->columns(2),
                     ])->columns(2),
             ])
@@ -160,7 +175,10 @@ class BulkRfidManager extends Page
         $cardProductId = $inputData['card_product_id'];
         $rechargeProductId = $inputData['recharge_product_id'];
 
-        $totalToPay = max(0, $cardPrice - $cardDiscount) + $credit;
+        $rechargeDiscount = (float) ($inputData['recharge_discount'] ?? 0);
+        $globalDiscount = (float) ($inputData['global_discount'] ?? 0);
+        $totalToPay = max(0, $cardPrice - $cardDiscount) + max(0, $credit - $rechargeDiscount) - $globalDiscount;
+        $totalToPay = max(0, $totalToPay); // Ensure not negative
 
         if (empty($codes)) {
             Notification::make()->title('No se proporcionaron códigos')->danger()->send();
@@ -188,6 +206,10 @@ class BulkRfidManager extends Page
                 $sharedUser->assignRole('client');
                 $sharedUserId = $sharedUser->id;
             }
+
+            $allLineItems = [];
+            $totalBatchAmount = 0;
+            $tagCodesList = [];
 
             foreach ($codes as $code) {
                 // Standardize to 8 characters (remove colons, padding, etc)
@@ -224,85 +246,93 @@ class BulkRfidManager extends Page
                     'tag_code' => $code,
                     'user_id' => $userId,
                     'company_id' => $companyId,
-                    'product_id' => $cardProductId, // Store the physical card product internally
+                    'product_id' => $cardProductId, 
                     'name' => "Tarjeta $code",
-                    'balance' => $credit, // Assign initial credit to the tag!
+                    'balance' => $credit, 
                     'currency' => 'BOB',
                     'is_active' => true,
                 ]);
 
-                // Record initial transaction (for history/tracking)
-                if ($totalToPay > 0 && $userId) {
-                    $wallet = Wallet::firstOrCreate(
-                        ['user_id' => $userId],
-                        ['balance' => 0, 'currency' => 'BOB']
-                    );
+                // Prepare Line Items for this specific tag
+                $tagLineItems = [];
+                $tagTotal = 0;
 
-                    // If manual, stay PENDING and don't increment balance yet
-                    $isManual = ($this->data['payment_method'] ?? 'manual') === 'manual';
-                    $shouldInvoice = $this->data['emit_invoice'] ?? false;
-                    
-                    $lineItems = [];
-                    
-                    // Line item 1: The physical card
-                    if ($cardPrice > 0 || $cardDiscount > 0) {
-                        $cardSiatCode = \App\Models\Product::find($cardProductId)?->siat_product_code ?? '1';
-                        $lineItems[] = [
-                            'concepto' => 'Venta de Tarjeta Física RFID',
-                            'cantidad' => 1,
-                            'costo_unitario' => $cardPrice,
-                            'descuento_unitario' => $cardDiscount,
-                            'detalle' => "Tarjeta Plástica $code",
-                            'codigo_producto' => $cardSiatCode,
-                            'ignora_factura' => false,
-                        ];
-                    }
-                    
-                    // Line item 2: The recharge service
-                    if ($credit > 0) {
-                        $rechargeSiatCode = \App\Models\Product::find($rechargeProductId)?->siat_product_code ?? '1';
-                        $lineItems[] = [
-                            'concepto' => 'Recarga de Saldo Billetera',
-                            'cantidad' => 1,
-                            'costo_unitario' => $credit,
-                            'descuento_unitario' => 0,
-                            'detalle' => "Recarga inicial tarjeta $code",
-                            'codigo_producto' => $rechargeSiatCode,
-                            'ignora_factura' => false,
-                        ];
-                    }
+                if ($cardPrice > 0 || $cardDiscount > 0) {
+                    $cardSiatCode = \App\Models\Product::find($cardProductId)?->siat_product_code ?? '1';
+                    $tagLineItems[] = [
+                        'concepto' => " RFID ($code) monto Bs " . number_format($cardPrice, 2),
+                        'cantidad' => (int) 1,
+                        'costo_unitario' => $cardPrice,
+                        'descuento_unitario' => $cardDiscount,
+                        'detalle' => " Tarjeta Plástica NFC Cod: $code",
+                        'codigo_producto' => $cardSiatCode,
+                        'ignora_factura' => false,
+                    ];
+                    $tagTotal += max(0, $cardPrice - $cardDiscount);
+                }
+                
+                if ($credit > 0) {
+                    $rechargeSiatCode = \App\Models\Product::find($rechargeProductId)?->siat_product_code ?? '1';
+                    $tagLineItems[] = [
+                        'concepto' => " ($code) monto Bs " . number_format($credit, 2),
+                        'cantidad' => (int) 1,
+                        'costo_unitario' => $credit,
+                        'descuento_unitario' => $rechargeDiscount,
+                        'detalle' => " Recarga inicial tarjeta NFC Cod: $code",
+                        'codigo_producto' => $rechargeSiatCode,
+                        'ignora_factura' => false,
+                    ];
+                    $tagTotal += max(0, $credit - $rechargeDiscount);
+                }
 
-                    $tx = WalletTransaction::create([
-                        'user_id' => $userId,
-                        'wallet_id' => $wallet->id,
-                        'type' => 'RECHARGE',
-                        'amount' => $totalToPay, // Total payment recorded
-                        'balance_after' => $tag->balance,
-                        'currency' => 'BOB',
-                        'reference_id' => 'BULK-' . $code . '-' . now()->format('YmdHis'),
-                        'status' => $isManual ? 'PENDING' : 'PENDING', // Both start pending for Libelula/Manual now
-                        'description' => 'Carga inicial y venta de tarjeta RFID',
-                        'metadata' => [
-                            'should_invoice' => $shouldInvoice,
-                            'razon_social' => $this->data['billing_razon_social'] ?? null,
-                            'documento' => $this->data['billing_document'] ?? null,
-                            'line_items' => $lineItems,
-                        ]
-                    ]);
+                // If it's the SAME user (corporate/existing), we group line items for a single master TX
+                if ($assignmentType !== 'individual') {
+                    $allLineItems = array_merge($allLineItems, $tagLineItems);
+                    $totalBatchAmount += $tagTotal;
+                    $tagCodesList[] = $code;
+                } else {
+                    // FOR INDIVIDUAL USERS: We MUST emit separate invoices AND separate TXs (different clients)
+                    if ($userId) {
+                        $isManual = ($inputData['payment_method'] ?? 'manual') === 'manual';
+                        $isCredit = ($inputData['payment_method'] ?? 'manual') === 'credit';
+                        $wallet = Wallet::firstOrCreate(['user_id' => $userId], ['balance' => 0, 'currency' => 'BOB']);
+                        $tx = WalletTransaction::create([
+                            'user_id' => $userId,
+                            'wallet_id' => $wallet->id,
+                            'type' => 'RECHARGE',
+                            'amount' => $tagTotal,
+                            'balance_after' => $tag->balance,
+                            'currency' => 'BOB',
+                            'reference_id' => 'BULK-' . $code . '-' . now()->timestamp,
+                            'status' => 'PENDING',
+                            'description' => " Venta tarjeta RFID $code",
+                            'payment_method' => $isManual ? 'MANUAL_CASH' : ($isCredit ? 'CREDITO' : 'LIBELULA'),
+                            'metadata' => [
+                                'rfid_tag' => $code, 
+                                'line_items' => $tagLineItems,
+                                'should_invoice' => $inputData['emit_invoice'] ?? false,
+                                'skip_wallet_update' => true, // Since the tag was already credited
+                            ]
+                        ]);
 
-                    // If it's Libelula Gateway, create the payment link
-                    if (!$isManual) {
-                        $libService = app(\App\Services\LibelulaPaymentService::class);
-                        
-                        $result = $libService->createPayment($wallet, $totalToPay, 'Carga inicial y venta de tarjeta', [
-                            'emite_factura' => $shouldInvoice,
-                            'internal_usage_tx' => true,
-                            'transaction_id' => $tx->id,
-                            'line_items' => $lineItems,
-                        ], false); // isPaid = false
+                        // Emit invoice if checked. For credit, we want to invoice immediately but keep status as credit.
+                        if ($inputData['emit_invoice'] ?? false) {
+                            $isCredit = ($inputData['payment_method'] ?? 'manual') === 'credit';
+                            $isManual = ($inputData['payment_method'] ?? 'manual') === 'manual';
+                            
+                            // For manual and credit, we want to emit invoice immediately (isPaid = true for manual, but for credit we pass is_credit = true)
+                            $libService = app(\App\Services\LibelulaPaymentService::class);
+                            $result = $libService->createPayment($wallet, $tagTotal, "Carga inicial RFID $code", [
+                                'emite_factura' => true,
+                                'internal_usage_tx' => true,
+                                'transaction_id' => $tx->id,
+                                'line_items' => $tagLineItems,
+                                'is_credit' => $isCredit,
+                            ], $isManual, 0);
 
-                        if (!$result['success']) {
-                            throw new \Exception("Libélula: " . ($result['detail'] ?? $result['message'] ?? 'Error desconocido'));
+                            if (!$result['success']) {
+                                throw new \Exception("Libélula (Tag $code): " . ($result['detail'] ?? $result['message']));
+                            }
                         }
                     }
                 }
@@ -310,11 +340,66 @@ class BulkRfidManager extends Page
                 $createdCount++;
             }
 
+            // FINAL STEP: Create ONE Master Transaction for corporate/existing users
+            if ($assignmentType !== 'individual' && !empty($allLineItems) && $userId) {
+                $isManual = ($inputData['payment_method'] ?? 'manual') === 'manual';
+                $isCredit = ($inputData['payment_method'] ?? 'manual') === 'credit';
+                $wallet = Wallet::firstOrCreate(['user_id' => $userId], ['balance' => 0, 'currency' => 'BOB']);
+                
+                // One single transaction for the whole batch
+                $masterTx = WalletTransaction::create([
+                    'user_id' => $userId,
+                    'wallet_id' => $wallet->id,
+                    'type' => 'RECHARGE',
+                    'amount' => max(0, $totalBatchAmount - $globalDiscount),
+                    'balance_after' => $wallet->balance, 
+                    'currency' => 'BOB',
+                    'reference_id' => 'BULK-BATCH-' . now()->timestamp,
+                    'status' => 'PENDING',
+                    'description' => "Venta lote de " . count($tagCodesList) . " tarjetas RFID",
+                    'payment_method' => $isManual ? 'MANUAL_CASH' : ($isCredit ? 'CREDITO' : 'LIBELULA'),
+                    'metadata' => [
+                        'tag_codes' => $tagCodesList,
+                        'line_items' => $allLineItems,
+                        'global_discount' => $globalDiscount,
+                        'should_invoice' => $inputData['emit_invoice'] ?? false,
+                        'skip_wallet_update' => true, // CRITICAL: Balance is already on tags!
+                    ]
+                ]);
+
+                // Emit invoice if checked. For credit, we want to invoice immediately but keep status as credit.
+                if ($inputData['emit_invoice'] ?? false) {
+                    $libService = app(\App\Services\LibelulaPaymentService::class);
+                    $result = $libService->createPayment($wallet, $masterTx->amount, $masterTx->description, [
+                        'emite_factura' => true,
+                        'internal_usage_tx' => true,
+                        'transaction_id' => $masterTx->id,
+                        'line_items' => $allLineItems,
+                        'is_credit' => $isCredit,
+                    ], $isManual, $globalDiscount);
+
+                    if (!$result['success']) {
+                        throw new \Exception("Libélula (Lote): " . ($result['detail'] ?? $result['message']));
+                    }
+                }
+            }
+
             DB::commit();
 
+            $bodyMessage = "Se crearon $createdCount tarjetas. $errorCount omitidas.";
+            if ($inputData['emit_invoice'] ?? false) {
+                if ($isManual) {
+                    $bodyMessage = "Tarjetas creadas. Recarga y Factura procesadas.";
+                } elseif ($isCredit) {
+                    $bodyMessage = "Tarjetas creadas a crédito y Facturas emitidas.";
+                } else {
+                    $bodyMessage = "Tarjetas creadas. Enlaces de pago generados en Libélula.";
+                }
+            }
+            
             Notification::make()
                 ->title('Proceso completado')
-                ->body("Se crearon $createdCount tarjetas. $errorCount omitidas por ya existir.")
+                ->body($bodyMessage)
                 ->success()
                 ->send();
 

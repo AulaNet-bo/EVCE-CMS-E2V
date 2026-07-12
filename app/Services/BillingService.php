@@ -66,11 +66,31 @@ class BillingService
                     ];
                 }
             }
+
+            // Fallback: If no blocks matched but there is energy consumption, use current price
+            if ($totalEnergyCost <= 0 && $kwh > 0) {
+                $current = $tariff->getCurrentPrices();
+                $totalEnergyCost = $kwh * $current['price_kwh'];
+                $breakdown = [[
+                    'block' => $current['block'],
+                    'energy_kwh' => round($kwh, 3),
+                    'rate' => $current['price_kwh'],
+                    'cost' => round($totalEnergyCost, 2),
+                    'seconds' => $durationSeconds
+                ]];
+                Log::info("Billing fallback used for Session #{$session->id} (No blocks matched). Using Block #{$current['block']} rate.");
+            }
         }
 
         // Use the session fee from the session model if it's already been determined (skipped or charged)
         // Otherwise fallback to the tariff price
         $sessionFee = isset($session->session_fee) ? (float)$session->session_fee : (float)($tariff->price_session ?? 0);
+        
+        // Fee Waiver Logic (v3.1)
+        $settings = SystemSetting::get();
+        if (($settings->waive_parking_fee_for_cards ?? false) && $session->rfidTag && !$session->rfidTag->is_virtual) {
+            $sessionFee = 0;
+        }
         
         // Minimum billing logic (User said "puede ser 1 sin problema")
         // We apply the minimum to the total energy cost if it's below the rate of 1kWh
@@ -90,12 +110,45 @@ class BillingService
             $timeFee = max(0, $durationMin - $freeMin) * $priceMin;
         }
 
-        $total = round($sessionFee + $totalEnergyCost + $timeFee, 2);
+        // Fee & Discount Logic based on granular Tariff controls
+        // Ensure the tag relationship is loaded to correctly identify modality (App vs Card)
+        $tag = $session->rfidTag;
+        if (!$tag && $session->rfid_tag_id) {
+            $tag = \App\Models\RfidTag::find($session->rfid_tag_id);
+        }
+
+        $isPhysicalCard = !$tag || ($tag && !$tag->is_virtual);
+        $isMobileApp = $tag && $tag->is_virtual;
+
+        // Determine if Fee applies
+        $shouldApplyFee = ($tariff->is_parking_fee_enabled ?? true) && (
+            ($isPhysicalCard && ($tariff->apply_fee_to_cards ?? false)) ||
+            ($isMobileApp && ($tariff->apply_fee_to_app ?? true))
+        );
+
+        if (!$shouldApplyFee) {
+            $sessionFee = 0;
+        }
+
+        // Determine if Discount applies
+        // NEW RULE: Discount applies ONLY if the Parking Fee is enabled for this modality
+        $shouldApplyDiscount = $shouldApplyFee && ($tariff->discount_fixed_amount ?? 0) > 0 && (
+            ($isPhysicalCard && ($tariff->apply_discount_to_cards ?? false)) ||
+            ($isMobileApp && ($tariff->apply_discount_to_app ?? true))
+        );
+
+        $discountAmount = $shouldApplyDiscount ? (float)$tariff->discount_fixed_amount : 0;
+
+        $actualDiscount = $shouldApplyDiscount ? min($discountAmount, $sessionFee) : 0;
+        $subtotal = round($sessionFee + $totalEnergyCost + $timeFee, 2);
+        $total = round($subtotal - $actualDiscount, 2);
 
         return [
             'total' => $total,
-            'session_fee' => $sessionFee,
-            'time_fee' => $timeFee,
+            'subtotal' => $subtotal,
+            'discount_amount' => $actualDiscount,
+            'session_fee' => round($sessionFee, 2),
+            'time_fee' => round($timeFee, 2),
             'energy_cost' => round($totalEnergyCost, 2),
             'currency' => $tariff->currency ?? 'USD',
             'utility_cost' => round($totalUtilityCost, 2),
@@ -124,18 +177,34 @@ class BillingService
 
             // 1. Skip logic (Grace Period & Manual Tags)
             if ($this->shouldSkipSessionFee($session)) {
+                $session->debited_amount = 0.0001; // Mark as "processed" with a tiny amount to avoid re-triggering
+                $session->session_fee = 0;
+                $session->save();
+                return true;
+            }
+
+            $tariff = $session->tariff ?: Tariff::first();
+
+            // Check granular fee toggle for cards vs app
+            $isPhysicalCard = !$session->rfidTag || ($session->rfidTag && !$session->rfidTag->is_virtual);
+            $isMobileApp = $session->rfidTag && $session->rfidTag->is_virtual;
+            $shouldApplyFee = ($tariff->is_parking_fee_enabled ?? true) && (
+                ($isPhysicalCard && ($tariff->apply_fee_to_cards ?? false)) ||
+                ($isMobileApp && ($tariff->apply_fee_to_app ?? true))
+            );
+
+            if (!$shouldApplyFee) {
                 $session->update([
-                    'debited_amount' => 0.0001, // Mark as "processed" with a tiny amount to avoid re-triggering
+                    'debited_amount' => 0.0001,
                     'session_fee' => 0
                 ]);
                 return true;
             }
 
-            $tariff = $session->tariff ?: Tariff::first();
-            $sessionFee = (float) ($tariff->price_session ?? 0);
+            $currentPrices = $tariff->getCurrentPrices();
+            $sessionFee = (float) ($currentPrices['price_session'] ?? 0);
             
             // We don't debit yet, we just check if it's possible to debit and have enough for 5kWh
-            $currentPrices = $tariff->getCurrentPrices();
             $minRequired = $sessionFee + (5.0 * $currentPrices['price_kwh']);
 
             $isVirtualTag = $tag && $tag->is_virtual;
@@ -146,41 +215,67 @@ class BillingService
             }
 
             // If we already debited the session fee (or more), don't do it again
-            if ((float)$session->debited_amount >= $sessionFee && (float)$session->debited_amount > 0) {
+            $initialFeeProcessed = ((float)$session->debited_amount > 0 || (float)$session->session_fee > 0);
+            if ($initialFeeProcessed) {
                 return true;
             }
 
             // Debit the session fee now
             if ($sessionFee > 0) {
-                $isVirtualTag = $tag && $tag->is_virtual;
-                if ($tag && !$isVirtualTag) {
-                    $tag->decrement('balance', $sessionFee);
-                } else {
-                    $wallet->decrement('balance', $sessionFee);
-                }
-                    
-                $refCol = Schema::hasColumn('wallet_transactions', 'reference_id') ? 'reference_id' : 'reference';
-                DB::table('wallet_transactions')->insert([
-                    'wallet_id' => $wallet->id,
-                    'user_id' => $session->user_id,
-                    'type' => 'CHARGE',
-                    'amount' => -$sessionFee,
-                    $refCol => (string) $session->transaction_id,
-                    'description' => "Cargo de Inicio (Parking/Session Fee) #" . $session->transaction_id . ($session->rfidTag ? " (Tarjeta: {$session->rfidTag->tag_code})" : ""),
-                    'currency' => $currentPrices['currency'],
-                    'balance_after' => ($tag && !$isVirtualTag) ? $tag->balance : $wallet->balance,
-                    'status' => 'COMPLETED',
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ]);
+                // Calculate net initial fee (Fee - Discount)
+                $initialPricing = $this->calculateSessionCost($session, 0);
+                $initialNetDebit = (float) $initialPricing['total'];
+                Log::info("ProcessInitialFee for Session #{$session->id}: Fee={$initialPricing['subtotal']}, Discount={$initialPricing['discount_amount']}, NetDebit={$initialNetDebit}");
 
-                $session->update([
-                    'debited_amount' => $sessionFee,
-                    'session_fee' => $sessionFee
-                ]);
+                $currentPrices = $tariff->getCurrentPrices();
+                $refCol = Schema::hasColumn('wallet_transactions', 'reference_id') ? 'reference_id' : 'reference';
+
+                DB::transaction(function() use ($tag, $isVirtualTag, $initialNetDebit, $wallet, $session, $sessionFee, $initialPricing, $tariff, $refCol, $currentPrices) {
+                    if ($tag && !$isVirtualTag) {
+                        $tag->decrement('balance', $initialNetDebit);
+                    } else {
+                        $wallet->decrement('balance', $initialNetDebit);
+                    }
+                        
+                    DB::table('wallet_transactions')->insert([
+                        'wallet_id' => $wallet->id,
+                        'user_id' => $session->user_id,
+                        'type' => 'CHARGE',
+                        'amount' => round(-$initialNetDebit, 2),
+                        $refCol => (string) $session->transaction_id,
+                        'description' => $this->formatTransactionDescription($session, $initialPricing),
+                        'currency' => $currentPrices['currency'],
+                        'balance_after' => ($tag && !$isVirtualTag) ? $tag->balance : $wallet->balance,
+                        'status' => 'COMPLETED',
+                        'metadata' => json_encode([
+                            'billing_details' => [
+                                'total_amount' => (float) $initialPricing['total'],
+                                'parking_fee' => (float) $initialPricing['session_fee'],
+                                'discount_amount' => (float) $initialPricing['discount_amount'],
+                                'time_fee' => (float) $initialPricing['time_fee'],
+                                'energy_kwh' => 0,
+                                'energy_cost' => 0,
+                                'breakdown' => $initialPricing['breakdown'],
+                            ]
+                        ]),
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+
+                    $session->debited_amount = $initialNetDebit;
+                    $session->session_fee = $sessionFee;
+                    $session->discount_amount = $initialPricing['discount_amount'];
+                    $session->applied_tariff_snapshot = $initialPricing['breakdown'] ? array_merge((array)$tariff->toArray(), ['billing_breakdown' => $initialPricing['breakdown']]) : $tariff->toArray();
+                    $session->save();
+
+                    // Force balance refresh
+                    \Illuminate\Support\Facades\Cache::forget("wallet_balance_{$session->user_id}");
+                });
             } else {
                 // If fee is 0, mark as processed anyway
-                $session->update(['debited_amount' => 0.0001, 'session_fee' => 0]);
+                $session->debited_amount = 0.0001;
+                $session->session_fee = 0;
+                $session->save();
             }
 
             return true;
@@ -249,13 +344,16 @@ class BillingService
     private function getSecondsOverlap(Carbon $start, Carbon $stop, string $blockStart, string $blockEnd): int
     {
         // This handles sessions spanning multiple days by iterating through each day
-        $current = $start->copy();
+        // Convert to local time because tariff blocks are defined in local time
+        $startLocal = $start->copy()->setTimezone('America/La_Paz');
+        $stopLocal = $stop->copy()->setTimezone('America/La_Paz');
+        $current = $startLocal->copy();
         $totalOverlap = 0;
 
-        while ($current->lt($stop)) {
+        while ($current->lt($stopLocal)) {
             $dayStart = $current->copy()->startOfDay();
-            $bStart = Carbon::parse($current->format('Y-m-d ') . $blockStart);
-            $bEnd = Carbon::parse($current->format('Y-m-d ') . $blockEnd);
+            $bStart = Carbon::parse($current->format('Y-m-d ') . $blockStart, 'America/La_Paz');
+            $bEnd = Carbon::parse($current->format('Y-m-d ') . $blockEnd, 'America/La_Paz');
 
             // Handle blocks that wrap around midnight (if any, though usually SteVe uses 00-24)
             if ($bEnd->lt($bStart)) {
@@ -263,7 +361,7 @@ class BillingService
             }
 
             $overlapStart = $current->max($bStart);
-            $overlapEnd = $stop->min($bEnd);
+            $overlapEnd = $stopLocal->min($bEnd);
 
             if ($overlapStart->lt($overlapEnd)) {
                 $totalOverlap += $overlapStart->diffInSeconds($overlapEnd);
@@ -271,7 +369,7 @@ class BillingService
 
             // Move to next block or next day
             $current = $bEnd->gt($current) ? $bEnd : $current->addDay()->startOfDay();
-            if ($current->gt($stop)) break;
+            if ($current->gt($stopLocal)) break;
         }
 
         return $totalOverlap;
@@ -317,12 +415,12 @@ class BillingService
 
             $refCol = Schema::hasColumn('wallet_transactions', 'reference_id') ? 'reference_id' : 'reference';
             
-            // Try to find an existing "Consumption" transaction for this session to update it
+            // Try to find an existing "CHARGE" transaction for this session to update it
             // instead of creating many small ones.
             $existingTx = WalletTransaction::where('user_id', $session->user_id)
                 ->where('type', 'CHARGE')
                 ->where($refCol, (string) $session->transaction_id)
-                ->where('description', 'like', 'Consumo%')
+                ->where('description', 'like', 'Carga #%')
                 ->first();
 
             $newBalance = ($tag && !$isVirtualTag) ? $tag->balance : $wallet->balance;
@@ -331,7 +429,18 @@ class BillingService
                 $existingTx->update([
                     'amount' => $existingTx->amount - $delta,
                     'balance_after' => $newBalance,
-                    'description' => "Consumo Energía #" . $session->transaction_id . " (" . round($session->total_energy_kwh, 2) . " kWh)" . ($session->rfidTag ? " (Tarjeta: {$session->rfidTag->tag_code})" : ""),
+                    'description' => $this->formatTransactionDescription($session, $pricing),
+                    'metadata' => array_merge((array)($existingTx->metadata ?? []), [
+                        'billing_details' => [
+                            'total_amount' => (float) $pricing['total'],
+                            'parking_fee' => (float) $pricing['session_fee'],
+                            'discount_amount' => (float) $pricing['discount_amount'],
+                            'time_fee' => (float) $pricing['time_fee'],
+                            'energy_kwh' => round((float)($session->total_energy_kwh), 3),
+                            'energy_cost' => (float) $pricing['energy_cost'],
+                            'breakdown' => $pricing['breakdown'],
+                        ]
+                    ]),
                     'updated_at' => now(),
                 ]);
             } else {
@@ -339,12 +448,23 @@ class BillingService
                     'wallet_id' => $wallet->id,
                     'user_id' => $session->user_id,
                     'type' => 'CHARGE',
-                    'amount' => -$delta,
+                    'amount' => round(-$delta, 2),
                     $refCol => (string) $session->transaction_id,
-                    'description' => "Consumo Energía #" . $session->transaction_id . " (" . round($session->total_energy_kwh, 2) . " kWh)" . ($session->rfidTag ? " (Tarjeta: {$session->rfidTag->tag_code})" : ""),
+                    'description' => $this->formatTransactionDescription($session, $pricing),
                     'currency' => $pricing['currency'],
                     'created_at' => now(),
                     'updated_at' => now(),
+                    'metadata' => json_encode([
+                        'billing_details' => [
+                            'total_amount' => (float) $pricing['total'],
+                            'parking_fee' => (float) $pricing['session_fee'],
+                            'discount_amount' => (float) $pricing['discount_amount'],
+                            'time_fee' => (float) $pricing['time_fee'],
+                            'energy_kwh' => round((float)($session->total_energy_kwh), 3),
+                            'energy_cost' => (float) $pricing['energy_cost'],
+                            'breakdown' => $pricing['breakdown'],
+                        ]
+                    ]),
                 ];
 
                 if (Schema::hasColumn('wallet_transactions', 'balance_after')) {
@@ -364,6 +484,9 @@ class BillingService
                 'utility_cost' => $pricing['utility_cost'],
                 'margin' => $pricing['margin'],
             ]);
+
+            // Force balance refresh
+            \Illuminate\Support\Facades\Cache::forget("wallet_balance_{$session->user_id}");
         });
 
         return true;
@@ -378,6 +501,10 @@ class BillingService
             return;
         }
 
+        // LOCK IMMEDIATELY to avoid double invoicing from concurrent processes
+        $session->update(['financial_locked_at' => now()]);
+        $session->refresh();
+
         $pricing = $this->calculateSessionCost($session, $session->total_energy_kwh, $session->stop_time);
         
         $wallet = Wallet::where('user_id', $session->user_id)->first();
@@ -387,9 +514,7 @@ class BillingService
             $alreadyDebited = (float) ($session->debited_amount ?? 0);
             $finalDelta = $pricing['total'] - $alreadyDebited;
 
-            if ($finalDelta > 0) {
-                // For finalization, we might allow small negative balances or handle it differently
-                // but for now, we follow the same logic.
+            if (round($finalDelta, 2) != 0) {
                 DB::transaction(function() use ($wallet, $session, $finalDelta, $pricing, $tag) {
                     $isVirtualTag = $tag && $tag->is_virtual;
                     if ($tag && !$isVirtualTag) {
@@ -403,28 +528,67 @@ class BillingService
                     $refCol = Schema::hasColumn('wallet_transactions', 'reference_id') ? 'reference_id' : 'reference';
                     $newBalance = ($tag && !$isVirtualTag) ? $tag->balance : $wallet->balance;
 
-                    // Consolidate final delta into existing consumption transaction
-                    $existingTx = WalletTransaction::where('user_id', $session->user_id)
-                        ->where('type', 'CHARGE')
-                        ->where($refCol, (string) $session->transaction_id)
-                        ->where('description', 'like', 'Consumo%')
-                        ->first();
+                    if ($finalDelta > 0) {
+                        // Consolidate final delta into existing consumption transaction
+                        $existingTx = WalletTransaction::where('user_id', $session->user_id)
+                            ->where('type', 'CHARGE')
+                            ->where($refCol, (string) $session->transaction_id)
+                            ->where('description', 'like', 'Carga #%')
+                            ->first();
 
-                    if ($existingTx) {
-                        $existingTx->update([
-                            'amount' => $existingTx->amount - $finalDelta,
-                            'balance_after' => $newBalance,
-                            'description' => "Consumo Energía #" . $session->transaction_id . " (" . round($session->total_energy_kwh, 2) . " kWh)" . ($session->rfidTag ? " (Tarjeta: {$session->rfidTag->tag_code})" : ""),
-                            'updated_at' => now(),
-                        ]);
+                        if ($existingTx) {
+                            $existingTx->update([
+                                'amount' => $existingTx->amount - $finalDelta,
+                                'balance_after' => $newBalance,
+                                'description' => $this->formatTransactionDescription($session, $pricing),
+                                'metadata' => array_merge((array)($existingTx->metadata ?? []), [
+                                    'billing_details' => [
+                                        'total_amount' => (float) $pricing['total'],
+                                        'parking_fee' => (float) $pricing['session_fee'],
+                                        'discount_amount' => (float) $pricing['discount_amount'],
+                                        'time_fee' => (float) $pricing['time_fee'],
+                                        'energy_kwh' => round((float)($session->total_energy_kwh), 3),
+                                        'energy_cost' => (float) $pricing['energy_cost'],
+                                        'breakdown' => $pricing['breakdown'],
+                                    ]
+                                ]),
+                                'updated_at' => now(),
+                            ]);
+                        } else {
+                            DB::table('wallet_transactions')->insert([
+                                'wallet_id' => $wallet->id,
+                                'user_id' => $session->user_id,
+                                'type' => 'CHARGE',
+                                'amount' => round(-$finalDelta, 2),
+                                $refCol => (string) $session->transaction_id,
+                                'description' => $this->formatTransactionDescription($session, $pricing),
+                                'currency' => $pricing['currency'],
+                                'balance_after' => $newBalance,
+                                'status' => 'COMPLETED',
+                                'metadata' => json_encode([
+                                    'billing_details' => [
+                                        'total_amount' => (float) $pricing['total'],
+                                        'parking_fee' => (float) $pricing['session_fee'],
+                                        'discount_amount' => (float) $pricing['discount_amount'],
+                                        'time_fee' => (float) $pricing['time_fee'],
+                                        'energy_kwh' => round((float)($session->total_energy_kwh), 3),
+                                        'energy_cost' => (float) $pricing['energy_cost'],
+                                        'breakdown' => $pricing['breakdown'],
+                                    ]
+                                ]),
+                                'created_at' => now(),
+                                'updated_at' => now(),
+                            ]);
+                        }
                     } else {
+                        // It's a REFUND (finalDelta is negative)
                         DB::table('wallet_transactions')->insert([
                             'wallet_id' => $wallet->id,
                             'user_id' => $session->user_id,
-                            'type' => 'CHARGE',
-                            'amount' => -$finalDelta,
+                            'type' => 'CREDIT',
+                            'amount' => round(abs($finalDelta), 2),
                             $refCol => (string) $session->transaction_id,
-                            'description' => "Consumo Energía #" . $session->transaction_id . ($session->rfidTag ? " (Tarjeta: {$session->rfidTag->tag_code})" : ""),
+                            'description' => "Reembolso Diferencia Carga #" . $session->transaction_id . ($session->rfidTag ? " (Tarjeta: {$session->rfidTag->tag_code})" : ""),
                             'currency' => $pricing['currency'],
                             'balance_after' => $newBalance,
                             'status' => 'COMPLETED',
@@ -435,64 +599,131 @@ class BillingService
 
                     $session->increment('debited_amount', $finalDelta);
                 });
+            } else {
+                $session->debited_amount = $pricing['total'];
+                $session->save();
             }
         }
 
         $session->update([
             'total_cost' => $pricing['total'],
+            'discount_amount' => $pricing['discount_amount'],
             'session_fee' => $pricing['session_fee'],
             'time_fee' => $pricing['time_fee'],
             'energy_cost' => $pricing['energy_cost'],
             'utility_cost' => $pricing['utility_cost'],
             'margin' => $pricing['margin'],
-            'financial_locked_at' => now(),
             'applied_tariff_snapshot' => array_merge(
                 (array)$session->applied_tariff_snapshot, 
-                ['billing_breakdown' => $pricing['breakdown']]
+                [
+                    'billing_breakdown' => $pricing['breakdown'],
+                    'discount_amount' => $pricing['discount_amount'],
+                    'subtotal' => $pricing['subtotal'],
+                ]
             ),
         ]);
 
-        // Trigger invoicing if applicable
-        $this->triggerInvoice($session);
+        // Trigger invoicing based on System Policy
+        $settings = SystemSetting::get();
+        $isPostpaid = $wallet?->is_postpaid ?? false;
+        
+        if ($session->user_id && $pricing['total'] > 0) {
+            // Only invoice at session end if policy is NOT 'recharge' 
+            // OR if the user is postpaid (as they don't do pre-recharges).
+            if ($settings->invoicing_policy !== 'recharge' || $isPostpaid) {
+                $this->triggerInvoice($session);
+            } else {
+                Log::info("Session #{$session->id} finished. Skipping session-end invoice due to 'recharge' policy.");
+            }
+        } else {
+            Log::info("Session #{$session->id} has no user or cost 0. Skipping Libelula invoice.");
+        }
+
+        // Force balance refresh in Redis/App
+        if ($session->user_id) {
+            $wallet = Wallet::where('user_id', $session->user_id)->first();
+            if ($wallet) {
+                \Illuminate\Support\Facades\Cache::forget("wallet_balance_{$session->user_id}");
+            }
+        }
     }
 
-    private function triggerInvoice(ChargingSession $session)
+    public function triggerInvoice(ChargingSession $session)
     {
+        $libService = app(\App\Services\LibelulaPaymentService::class);
         try {
-            $libService = app(\App\Services\LibelulaPaymentService::class);
+            Log::info("Triggering invoice for Session #{$session->id}", ['user_id' => $session->user_id]);
+
             $wallet = Wallet::where('user_id', $session->user_id)->first();
             if (!$wallet) {
                 Log::warning("Cannot trigger invoice: User has no wallet", ['user_id' => $session->user_id]);
                 return;
             }
             
+            if (!$session->user || empty($session->user->billing_document)) {
+                Log::warning("Cannot trigger invoice: User has no billing document (NIT/CI)", ['user_id' => $session->user_id]);
+                return;
+            }
+            
+            // Find the wallet transaction to link it
+            $refCol = Schema::hasColumn('wallet_transactions', 'reference_id') ? 'reference_id' : 'reference';
+            $walletTx = WalletTransaction::where('user_id', $session->user_id)
+                ->where('type', 'CHARGE')
+                ->where($refCol, (string) $session->transaction_id)
+                ->first();
+            
             $settings = SystemSetting::get();
             $lineItems = [];
             
-            // 1. Energy Component
+            // 1. Energy Components (Breakdown by Blocks)
             $energyProduct = Product::find($settings->product_energy_id) 
-                ?? $tariff?->energyProduct 
                 ?? Product::where('internal_code', 'ENERGY-SVC')->first();
+            $energyName = $energyProduct?->name ?? 'Consumo de Energía';
 
-            if ($session->energy_cost > 0) {
+            $breakdown = $session->applied_tariff_snapshot['billing_breakdown'] ?? [];
+            
+            if (!empty($breakdown)) {
+                foreach ($breakdown as $item) {
+                        $cost = (float) ($item['cost'] ?? 0);
+                        $kwh = (float) ($item['energy_kwh'] ?? 0);
+                        if ($cost > 0 || $kwh > 0) {
+                            $blockIdx = $item['block'] ?? '?';
+                            $rate = round((float) ($item['rate'] ?? 0), 2);
+                            
+                            $lineItems[] = [
+                                'concepto' => "{$energyName} (Bloque {$blockIdx})",
+                                'cantidad' => 1,
+                                'costo_unitario' => round($cost, 2),
+                                'descuento_unitario' => 0,
+                                'detalle' => "Uso en Bloque Horario #{$blockIdx} kWh " . round($kwh, 2) . " x " . number_format($rate, 2) . " = " . number_format($cost, 2) . " BoB",
+                                'codigo_producto' => $energyProduct?->siat_product_code ?? '10',
+                            ];
+                            Log::info("Added Energy Line for Session #{$session->id}: " . json_encode(end($lineItems)));
+                        }
+                }
+            } elseif ($session->energy_cost > 0) {
+                // Fallback to single energy line
+                $kwh = round((float) $session->total_energy_kwh, 2);
+                $rate = round((float) $session->rate_kwh, 2);
+                $cost = round((float) $session->energy_cost, 2);
                 $lineItems[] = [
-                    'concepto' => "Consumo de Energía ({$session->total_energy_kwh} kWh)",
+                    'concepto' => "{$energyName}",
                     'cantidad' => 1,
-                    'costo_unitario' => round($session->energy_cost, 2),
+                    'costo_unitario' => $cost,
                     'descuento_unitario' => 0,
-                    'detalle' => "Carga en Estación: " . ($session->station?->name ?? 'EV Charger'),
-                    'codigo_producto' => $energyProduct?->siat_product_code ?? '1',
+                    'detalle' => "Carga kWh " . round($kwh, 2) . " x " . number_format($rate, 2) . " = " . number_format($cost, 2) . " BoB",
+                    'codigo_producto' => $energyProduct?->siat_product_code ?? '10',
                 ];
             }
 
-            // 2. Connection Fee (Parking)
+            // 2. Initial Session Fee (Parking)
             if ($session->session_fee > 0) {
                 $connProduct = Product::find($settings->product_connection_id)
                     ?? $tariff?->connectionProduct 
                     ?? Product::where('internal_code', 'CONN-FEE')->first();
 
                 $lineItems[] = [
-                    'concepto' => "Cargo por Conexión / Inicio de Sesión",
+                    'concepto' => $connProduct?->name ?? "Cargo por Conexión / Inicio de Sesión (Tarifa Plana)",
                     'cantidad' => 1,
                     'costo_unitario' => round($session->session_fee, 2),
                     'descuento_unitario' => 0,
@@ -508,7 +739,7 @@ class BillingService
                     ?? Product::where('internal_code', 'TIME-PENALTY')->first();
 
                 $lineItems[] = [
-                    'concepto' => "Recargo por Tiempo Excedido",
+                    'concepto' => "{$timeProduct?->name} - Recargo por Tiempo Excedido",
                     'cantidad' => 1,
                     'costo_unitario' => round($session->time_fee, 2),
                     'descuento_unitario' => 0,
@@ -517,43 +748,92 @@ class BillingService
                 ];
             }
 
-            // Fallback for empty line items (unlikely but safe)
+            // Fallback safety
             if (empty($lineItems)) {
                 $lineItems[] = [
                     'concepto' => "Servicio de Carga #" . $session->transaction_id,
                     'cantidad' => 1,
-                    'costo_unitario' => round($session->total_cost, 2),
+                    'costo_unitario' => max(0.01, round($session->total_cost, 2)),
                     'descuento_unitario' => 0,
                     'detalle' => "Consumo de Energía",
-                    'codigo_producto' => $energyProduct?->siat_product_code ?? '1',
+                    'codigo_producto' => '1',
                 ];
             }
 
-            $libResponse = $libService->createPayment($wallet, $session->total_cost, "Consumo Energía #{$session->transaction_id}", [
-                'emite_factura' => true,
-                'internal_usage_tx' => true,
-                'session_id' => $session->id,
-                'identificador' => "SES-{$session->transaction_id}",
-                'line_items' => $lineItems,
-                'codigo_tipo_documento' => $session->user?->billing_doc_type ?? 'CI',
-            ], true);
-            
-            if ($libResponse['success'] && !empty($libResponse['payment_url'])) {
-                $session->update([
-                    'invoice_url' => $libResponse['payment_url'],
-                    'external_payment_id' => $libResponse['transaction_id'] ?? null
-                ]);
+            Log::info("Triggering invoice for Session #{$session->id}");
 
-                // Also update the wallet transaction so it appears in the mobile app history
-                $refCol = Schema::hasColumn('wallet_transactions', 'reference_id') ? 'reference_id' : 'reference';
-                WalletTransaction::where('user_id', $session->user_id)
-                    ->where('type', 'CHARGE')
-                    ->where($refCol, (string) $session->transaction_id)
-                    ->update(['invoice_url' => $libResponse['payment_url']]);
+            $subtotal = (float) ($session->applied_tariff_snapshot['subtotal'] ?? ($session->total_cost + ($session->discount_amount ?? 0)));
+            $discount = (float) ($session->applied_tariff_snapshot['discount_amount'] ?? ($session->discount_amount ?? 0));
+            
+            // Final safety check to avoid negative invoices in Libelula
+            if ($discount > $subtotal) {
+                $discount = $subtotal;
             }
-        } catch (\Throwable $ex) {
-            Log::error("Failed to trigger invoice for Session #{$session->id}", ['error' => $ex->getMessage()]);
-        }
+
+            // Ensure subtotal is not zero for Libelula
+            $amountToSend = max(0.01, round($subtotal, 2));
+
+                $libResponse = $libService->createPayment($wallet, $amountToSend, "Consumo Energía #{$session->transaction_id}", [
+                    'transaction_id' => $walletTx?->id,
+                    'emite_factura' => true,
+                    'internal_usage_tx' => true,
+                    'session_id' => $session->id,
+                    'identificador' => "SES-{$session->transaction_id}",
+                    'line_items' => $lineItems,
+                    'codigo_tipo_documento' => $session->user?->billing_doc_type ?? 'CI',
+                    'razon_social' => $session->user->billing_razon_social,
+                    'documento' => $session->user->billing_document,
+                    'complemento' => $session->user->billing_complement,
+                ], true, $discount);
+
+                Log::info("Libélula response for Session #{$session->id}", ['success' => $libResponse['success'] ?? false, 'url' => $libResponse['payment_url'] ?? null]);
+                
+                $urlToSave = $libResponse['invoice_url'] ?? $libResponse['payment_url'];
+                
+                if ($libResponse['success'] && !empty($urlToSave)) {
+                    $session->update([
+                        'invoice_url' => $urlToSave,
+                        'external_payment_id' => $libResponse['transaction_id'] ?? null
+                    ]);
+
+                    // Explicitly save the object attributes too in case update() doesn't refresh the local instance used elsewhere
+                    $session->invoice_url = $urlToSave;
+                    $session->external_payment_id = $libResponse['transaction_id'] ?? null;
+                    $session->save();
+
+                    // Also update the wallet transaction so it appears in the mobile app history
+                    $refCol = Schema::hasColumn('wallet_transactions', 'reference_id') ? 'reference_id' : 'reference';
+                    WalletTransaction::where('user_id', $session->user_id)
+                        ->where('type', 'CHARGE')
+                        ->where($refCol, (string) $session->transaction_id)
+                        ->update(['invoice_url' => $urlToSave]);
+                    
+                    Log::info("Invoice URL saved for Session #{$session->id} and related WalletTransaction.");
+                }
+            } catch (\Throwable $ex) {
+                Log::error("Failed to trigger invoice for Session #{$session->id}", ['error' => $ex->getMessage(), 'trace' => $ex->getTraceAsString()]);
+            }
     }
 
+    /**
+     * Formats a detailed description for the wallet transaction.
+     */
+    private function formatTransactionDescription(ChargingSession $session, array $pricing): string
+    {
+        $kwh = round((float) ($session->total_energy_kwh ?? 0), 2);
+        $parts = ["Carga #{$session->transaction_id} ({$kwh} kWh)"];
+        
+        if ($pricing['discount_amount'] > 0) {
+            $parts[] = "Subt: " . number_format($pricing['subtotal'], 2);
+            $parts[] = "Desc: -" . number_format($pricing['discount_amount'], 2);
+        }
+        
+        $parts[] = "Total: " . number_format($pricing['total'], 2) . " " . ($pricing['currency'] ?? 'BOB');
+
+        if ($session->rfidTag) {
+            $parts[] = "Tag: " . $session->rfidTag->tag_code;
+        }
+
+        return implode(" | ", $parts);
+    }
 }

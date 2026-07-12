@@ -8,6 +8,7 @@ use App\Models\RfidTag;
 use App\Models\Station;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\DB;
 use App\Services\SteveDataSource;
 
 class SyncSteveSessions extends Command

@@ -81,9 +81,27 @@ class LibelulaApiLogResource extends Resource
                         'WEBHOOK' => 'warning',
                         default => 'gray',
                     }),
+                Tables\Columns\TextColumn::make('transaction_id')
+                    ->label('Transacción')
+                    ->searchable()
+                    ->sortable()
+                    ->url(fn (LibelulaApiLog $record): ?string => $record->transaction_id ? WalletTransactionResource::getUrl('edit', ['record' => $record->transaction_id]) : null)
+                    ->color('info')
+                    ->weight('bold'),
+                Tables\Columns\TextColumn::make('transaction.user.name')
+                    ->label('Usuario')
+                    ->searchable()
+                    ->sortable()
+                    ->description(fn (LibelulaApiLog $record): ?string => $record->transaction?->user?->email),
+                Tables\Columns\TextColumn::make('transaction.amount')
+                    ->label('Monto')
+                    ->money('BOB')
+                    ->sortable()
+                    ->color('success'),
                 Tables\Columns\TextColumn::make('endpoint')
                     ->label('Endpoint')
-                    ->searchable(),
+                    ->searchable()
+                    ->toggleable(isToggledHiddenByDefault: true),
                 Tables\Columns\TextColumn::make('http_status')
                     ->label('HTTP Status')
                     ->badge()
@@ -94,12 +112,6 @@ class LibelulaApiLogResource extends Resource
                         default => 'gray',
                     })
                     ->sortable(),
-                Tables\Columns\TextColumn::make('transaction_id')
-                    ->label('Transacción')
-                    ->searchable()
-                    ->sortable()
-                    ->url(fn (LibelulaApiLog $record): ?string => $record->transaction_id ? WalletTransactionResource::getUrl('edit', ['record' => $record->transaction_id]) : null)
-                    ->color('info'),
             ])
             ->filters([
                 //

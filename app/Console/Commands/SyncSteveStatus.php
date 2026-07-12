@@ -70,32 +70,36 @@ class SyncSteveStatus extends Command
                     }
                 }
 
-                // Sync Connector Status
-                $connector = Connector::updateOrCreate(
-                    [
-                        'station_id' => $station->id,
-                        'connector_id' => $sConnector->connector_id,
-                    ],
-                    [
-                        'status' => $status,
-                        'connector_pk' => $sConnector->connector_pk
-                    ]
-                );
-
-                $this->line("Synced: {$station->charge_box_id} - Conn {$connector->connector_id} -> {$status}");
-
-                // --- Real-time Sync to Firebase ---
-                try {
-                    \App\Services\FirebaseService::syncStationData($station->charge_box_id, [
-                        'status' => $status,
-                        'connectors' => [
-                            (string)$connector->connector_id => [
-                                'status' => $status
-                            ]
+                // Sync Connector Status (Only if connector exists)
+                if ($sConnector->connector_id !== null) {
+                    $connector = Connector::updateOrCreate(
+                        [
+                            'station_id' => $station->id,
+                            'connector_id' => $sConnector->connector_id,
+                        ],
+                        [
+                            'status' => $status,
+                            'connector_pk' => $sConnector->connector_pk
                         ]
-                    ]);
-                } catch (\Throwable $e) {
-                    // Silently fail or log for Firebase
+                    );
+
+                    $this->line("Synced: {$station->charge_box_id} - Conn {$connector->connector_id} -> {$status}");
+
+                    // --- Real-time Sync to Firebase ---
+                    try {
+                        \App\Services\FirebaseService::syncStationData($station->charge_box_id, [
+                            'status' => $status,
+                            'connectors' => [
+                                (string)$connector->connector_id => [
+                                    'status' => $status
+                                ]
+                            ]
+                        ]);
+                    } catch (\Throwable $e) {
+                        // Silently fail or log for Firebase
+                    }
+                } else {
+                    $this->line("Synced Station (No connectors yet): {$station->charge_box_id}");
                 }
             }
 

@@ -25,6 +25,11 @@ class UserResource extends Resource
 
     protected static ?string $navigationGroup = 'Usuarios';
 
+    public static function canViewAny(): bool
+    {
+        return auth()->user()?->hasAnyRole(['super_admin', 'staff_admin']) ?? false;
+    }
+
     public static function getEloquentQuery(): Builder
     {
         $query = parent::getEloquentQuery()->whereDoesntHave('roles', function ($query) {

@@ -179,6 +179,47 @@ class ManageSettings extends Page
                             ->default(3)
                             ->suffix('minutos')
                             ->helperText('Tiempo en el que no se volverá a cobrar el fee de inicio si un usuario reinicia una carga.'),
+
+                        Toggle::make('waive_parking_fee_for_cards')
+                            ->label('Exonerar Fee de Inicio a Tarjetas Físicas')
+                            ->default(false)
+                            ->helperText('Si se activa, a los usuarios con tarjeta no se les cobrará el cargo por conexión, solo a los usuarios de App.'),
+                        Toggle::make('restrict_charging_without_vehicle')
+                            ->label('Restringir carga sin vehículo registrado')
+                            ->default(false)
+                            ->helperText('Si se activa, los usuarios de la App móvil no podrán iniciar una carga a menos que tengan al menos un vehículo registrado y seleccionen uno.'),
+                    ])->columns(2),
+
+                Section::make('Configuración de Correo Electrónico (SMTP)')
+                    ->description('Administre los parámetros del servidor de correo para notificaciones y restablecimiento de contraseñas.')
+                    ->schema([
+                        TextInput::make('mail_host')
+                            ->label('Servidor SMTP (Host)')
+                            ->placeholder('ej. mail.dmc.com.bo'),
+                        TextInput::make('mail_port')
+                            ->label('Puerto SMTP')
+                            ->numeric()
+                            ->default(587),
+                        Select::make('mail_encryption')
+                            ->label('Seguridad')
+                            ->options([
+                                'tls' => 'TLS / STARTTLS',
+                                'ssl' => 'SSL',
+                                'none' => 'Ninguna',
+                            ]),
+                        TextInput::make('mail_username')
+                            ->label('Usuario de Autenticación')
+                            ->placeholder('ej. infoep@dmc.com.bo'),
+                        TextInput::make('mail_password')
+                            ->label('Contraseña')
+                            ->password()
+                            ->revealable(),
+                        TextInput::make('mail_from_address')
+                            ->label('Correo Remitente (From Address)')
+                            ->placeholder('ej. info@electropoint.bo'),
+                        TextInput::make('mail_from_name')
+                            ->label('Nombre del Remitente (From Name)')
+                            ->placeholder('ej. Electropoint'),
                     ])->columns(2),
 
                 Section::make('Mapeo de Productos para Facturación (SFE)')

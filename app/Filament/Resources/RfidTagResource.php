@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\Schema;
 use Filament\Notifications\Notification;
 use App\Models\WalletTransaction;
 use App\Models\Wallet;
+use App\Models\SystemSetting;
 
 class RfidTagResource extends Resource
 {
@@ -134,12 +135,17 @@ class RfidTagResource extends Resource
                     ->label('Recarga Manual')
                     ->icon('heroicon-o-currency-dollar')
                     ->color('warning')
+                    ->visible(fn () => auth()->user()?->hasAnyRole(['super_admin', 'staff_admin', 'sales']))
                     ->form([
                         Forms\Components\Select::make('payment_method')
                             ->label('Método de Pago')
-                            ->options([
+                            ->options(fn (callable $get) => $get('emit_invoice') ? [
                                 'manual' => 'Efectivo / Manual (Caja)',
                                 'libelula' => 'Pasarela de Pago (Libélula QR/Tarjeta)',
+                                'credit' => 'A Crédito (Activa saldo de inmediato)',
+                            ] : [
+                                'manual' => 'Efectivo / Manual (Caja)',
+                                'credit' => 'A Crédito (Activa saldo de inmediato)',
                             ])
                             ->required()
                             ->default('manual')
@@ -182,17 +188,29 @@ class RfidTagResource extends Resource
                             ->numeric()
                             ->required()
                             ->minValue(0.01)
-                            ->default(10),
+                            ->default(10)
+                            ->live()
+                            ->afterStateUpdated(function (Forms\Set $set, $state, Forms\Get $get) {
+                                if (!$get('custom_description')) {
+                                    $set('description', 'Recarga de tarjeta RFID - Bs ' . number_format((float)$state, 2));
+                                }
+                            }),
                         Forms\Components\TextInput::make('description')
                             ->label('Motivo / Descripción')
                             ->required()
                             ->maxLength(255)
-                            ->default('Recarga de tarjeta RFID')
+                            ->default('Recarga de tarjeta RFID - Bs 10.00')
                             ->disabled(fn (Forms\Get $get) => !$get('custom_description'))
                             ->dehydrated(),
+                        Forms\Components\TextInput::make('global_discount')
+                            ->label('Descuento Global (BOB)')
+                            ->numeric()
+                            ->default(0)
+                            ->minValue(0)
+                            ->helperText('Monto a descontar en el total de la factura oficial.'),
                         Forms\Components\Toggle::make('emit_invoice')
                             ->label('Emitir Factura Oficial (Libélula)')
-                            ->default(false)
+                            ->default(fn() => SystemSetting::get()->invoicing_policy === 'recharge')
                             ->helperText('Requiere que la tarjeta esté asignada a un usuario con datos de facturación.')
                             ->live(),
                     ])
@@ -210,9 +228,11 @@ class RfidTagResource extends Resource
 
                         DB::transaction(function () use ($record, $amount, $data) {
                             $isManual = ($data['payment_method'] === 'manual');
+                            $isCredit = ($data['payment_method'] === 'credit');
+                            $shouldIncrementBalance = $isManual || $isCredit;
                             
-                            // 1. Update Tag balance ONLY IF it's a manual cash payment (Libelula payments update on webhook)
-                            if ($isManual) {
+                            // 1. Update Tag balance ONLY IF it's a manual cash payment or a credit payment (balance is active immediately)
+                            if ($shouldIncrementBalance) {
                                 if (!$record->is_virtual) {
                                     $record->increment('balance', $amount);
                                 } else {
@@ -235,20 +255,22 @@ class RfidTagResource extends Resource
                                     'user_id' => $user->id,
                                     'type' => 'RECHARGE',
                                     'amount' => $amount,
-                                    'balance_after' => $isManual ? ($record->is_virtual ? $wallet->balance : $record->balance) : $record->balance,
+                                    'balance_after' => $shouldIncrementBalance ? ($record->is_virtual ? $wallet->balance : $record->balance) : $record->balance,
                                     'currency' => $wallet->currency ?? 'BOB',
                                     $refCol => 'TAG-RECH-' . $record->tag_code . '-' . now()->timestamp,
                                     'description' => $data['description'],
                                     'status' => $isManual ? 'COMPLETED' : 'PENDING',
-                                    'payment_method' => $isManual ? 'MANUAL_CASH' : 'LIBELULA',
+                                    'payment_method' => $isManual ? 'MANUAL_CASH' : ($isCredit ? 'CREDITO' : 'LIBELULA'),
                                     'metadata' => [
                                         'rfid_tag' => $record->tag_code,
-                                        'skip_wallet_update' => !$record->is_virtual, // Only skip if physical (balance already incremented)
+                                        'skip_wallet_update' => $isCredit || (!$record->is_virtual), // Skip wallet update if balance is already incremented
+                                        'global_discount' => (float) ($data['global_discount'] ?? 0),
+                                        'should_invoice' => (bool) $data['emit_invoice'],
                                     ],
                                 ]);
 
                                 // 3. Handle Invoicing if requested OR if we need a payment link
-                                if ($data['emit_invoice'] || !$isManual) {
+                                if ($data['emit_invoice'] || (!$isManual && !$isCredit)) {
                                     $service = app(\App\Services\LibelulaPaymentService::class);
                                     
                                     $productCode = \App\Models\Product::find($data['product_id'] ?? null)?->siat_product_code ?? '1';
@@ -266,15 +288,23 @@ class RfidTagResource extends Resource
 
                                     // if !$isManual, $isPaid is false so it creates a pending link and emits invoice LATER.
                                     // if $isManual, $isPaid is true so it emits invoice IMMEDIATELY.
+                                    // For credit ($isCredit), we pass is_credit = true so Libelula generates invoice immediately without completion.
                                     $result = $service->createPayment($wallet, $amount, $data['description'], [
                                         'emite_factura' => $data['emit_invoice'],
                                         'internal_usage_tx' => true,
                                         'transaction_id' => $tx->id,
                                         'line_items' => $lineItems,
-                                    ], $isManual); // isPaid = $isManual
+                                        'is_credit' => $isCredit,
+                                    ], $isManual, (float) ($data['global_discount'] ?? 0)); // isPaid = $isManual, + discount
 
                                     if ($result['success']) {
-                                        if (!$isManual && !empty($result['payment_url'])) {
+                                        if ($isCredit) {
+                                            Notification::make()
+                                                ->title('Carga a Crédito Registrada')
+                                                ->body('La tarjeta ha sido recargada y la factura fue emitida en Libélula.')
+                                                ->success()
+                                                ->send();
+                                        } elseif (!$isManual && !empty($result['payment_url'])) {
                                             Notification::make()
                                                 ->title('Link de Pago Generado')
                                                 ->body('La transacción está pendiente. Usa el botón de Libélula para pagar.')
@@ -294,10 +324,18 @@ class RfidTagResource extends Resource
                                             ->send();
                                     }
                                 } else {
-                                    Notification::make()
-                                        ->title('Recarga exitosa')
-                                        ->success()
-                                        ->send();
+                                    if ($isCredit) {
+                                        Notification::make()
+                                            ->title('Carga a Crédito Registrada')
+                                            ->body('La tarjeta ha sido recargada. Valide el pago en Transacciones cuando el cliente pague.')
+                                            ->success()
+                                            ->send();
+                                    } else {
+                                        Notification::make()
+                                            ->title('Recarga exitosa')
+                                            ->success()
+                                            ->send();
+                                    }
                                 }
                             } else {
                                 Notification::make()

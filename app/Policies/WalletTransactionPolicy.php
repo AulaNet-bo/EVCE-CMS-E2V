@@ -13,7 +13,7 @@ class WalletTransactionPolicy
      */
     public function viewAny(User $user): bool
     {
-        return $user->hasRole(['super_admin', 'accountant']);
+        return $user->hasRole(['super_admin', 'accountant', 'kiosko']);
     }
 
     /**
@@ -21,7 +21,7 @@ class WalletTransactionPolicy
      */
     public function view(User $user, WalletTransaction $walletTransaction): bool
     {
-        return $user->hasRole(['super_admin', 'accountant']);
+        return $user->hasRole(['super_admin', 'accountant', 'kiosko']);
     }
 
     /**

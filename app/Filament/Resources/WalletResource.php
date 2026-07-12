@@ -3,7 +3,10 @@
 namespace App\Filament\Resources;
 
 use App\Filament\Resources\WalletResource\Pages;
+use App\Filament\Resources\WalletResource\RelationManagers;
 use App\Models\Wallet;
+use App\Models\WalletTransaction;
+use App\Models\SystemSetting;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
@@ -115,15 +118,26 @@ class WalletResource extends Resource
                             ->numeric()
                             ->required()
                             ->minValue(0.01)
-                            ->default(10),
+                            ->default(10)
+                            ->live()
+                            ->afterStateUpdated(function (Forms\Set $set, $state) {
+                                $set('description', 'Manual Top-up - Bs ' . number_format((float)$state, 2));
+                            }),
                         Forms\Components\TextInput::make('description')
                             ->label('Reason / Description')
                             ->placeholder('e.g. Promotion, Adjustment, Cash Deposit')
                             ->required()
-                            ->maxLength(255),
+                            ->maxLength(255)
+                            ->default('Manual Top-up - Bs 10.00'),
+                        Forms\Components\TextInput::make('global_discount')
+                            ->label('Descuento Global (BOB)')
+                            ->numeric()
+                            ->default(0)
+                            ->minValue(0)
+                            ->helperText('Monto a descontar en el total de la factura oficial.'),
                         Forms\Components\Toggle::make('emit_invoice')
                             ->label('Emit Official Invoice (Libélula)')
-                            ->default(false)
+                            ->default(fn() => SystemSetting::get()->invoicing_policy === 'recharge')
                             ->helperText('If enabled, a manual payment will be registered in Libélula to generate the SIAT invoice.'),
                     ])
                     ->action(function (Wallet $record, array $data) {
@@ -147,9 +161,12 @@ class WalletResource extends Resource
                                 'status' => 'COMPLETED',
                                 'created_at' => now(),
                                 'updated_at' => now(),
+                                'metadata' => [
+                                    'global_discount' => (float) ($data['global_discount'] ?? 0),
+                                ],
                             ];
 
-                            DB::table('wallet_transactions')->insert($insert);
+                            WalletTransaction::create($insert);
                         });
 
                         if ($data['emit_invoice'] ?? false) {
@@ -157,7 +174,7 @@ class WalletResource extends Resource
                             $service->createPayment($record, $amount, $data['description'], [
                                 'emite_factura' => true,
                                 'internal_usage_tx' => true, // We don't want a duplicate RECHARGE record
-                            ], true); // isPaid = true
+                            ], true, (float) ($data['global_discount'] ?? 0)); // isPaid = true, + discount
                         }
 
                         \Filament\Notifications\Notification::make()
@@ -178,10 +195,15 @@ class WalletResource extends Resource
                             ->prefix('BOB')
                             ->minValue(1)
                             ->default(100),
+                        Forms\Components\TextInput::make('global_discount')
+                            ->label('Descuento Global (BOB)')
+                            ->numeric()
+                            ->default(0)
+                            ->minValue(0),
                     ])
                     ->action(function (Wallet $record, array $data) {
                         $service = new \App\Services\LibelulaPaymentService();
-                        $result = $service->createPayment($record, $data['amount']);
+                        $result = $service->createPayment($record, $data['amount'], 'Recarga Wallet', [], false, (float) ($data['global_discount'] ?? 0));
                         
                         if ($result['success']) {
                             // Redirect to Payment URL
@@ -213,7 +235,7 @@ class WalletResource extends Resource
     public static function getRelations(): array
     {
         return [
-            // Potentially TransactionHistoryRelationManager
+            RelationManagers\TransactionsRelationManager::class,
         ];
     }
 

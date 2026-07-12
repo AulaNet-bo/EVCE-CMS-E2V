@@ -75,6 +75,11 @@ class LibelulaDebugger extends Page implements HasForms
                             ->numeric()
                             ->required()
                             ->label('Descuento Unitario (Bs)'),
+                        TextInput::make('descuento_global')
+                            ->numeric()
+                            ->required()
+                            ->default(0)
+                            ->label('Descuento Global (Bs)'),
                     ])->columns(2),
             ])
             ->statePath('data');

@@ -65,6 +65,7 @@ class SystemController extends Controller
                 'policies' => [
                     'invoicing_policy' => $settings->invoicing_policy ?? 'recharge',
                     'nit_requirement_policy' => $settings->nit_requirement_policy ?? 'optional',
+                    'restrict_charging_without_vehicle' => (bool) ($settings->restrict_charging_without_vehicle ?? false),
                 ],
             ]
         ]);

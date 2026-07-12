@@ -34,9 +34,19 @@ class LocationResource extends Resource
                     ->maxLength(255),
                 Forms\Components\TextInput::make('latitude')
                     ->numeric()
+                    ->inputMode('decimal')
+                    ->step('any')
+                    ->minValue(-90)
+                    ->maxValue(90)
+                    ->dehydrateStateUsing(fn ($state) => (blank($state)) ? null : (float) str_replace(',', '.', $state))
                     ->default(null),
                 Forms\Components\TextInput::make('longitude')
                     ->numeric()
+                    ->inputMode('decimal')
+                    ->step('any')
+                    ->minValue(-180)
+                    ->maxValue(180)
+                    ->dehydrateStateUsing(fn ($state) => (blank($state)) ? null : (float) str_replace(',', '.', $state))
                     ->default(null),
                 Forms\Components\TextInput::make('google_maps_url')
                     ->label('Google Maps URL')

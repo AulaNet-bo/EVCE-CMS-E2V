@@ -28,7 +28,7 @@ class DispenserQrGenerator extends Page implements HasForms
 
     public static function canAccess(): bool
     {
-        return true;
+        return auth()->user()?->hasAnyRole(['super_admin', 'staff_admin', 'sales']) ?? false;
     }
 
     public ?array $data = [];
