@@ -4,7 +4,6 @@ namespace App\Filament\Pages;
 
 use App\Services\LibelulaPaymentService;
 use Filament\Forms\Components\Section;
-use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Concerns\InteractsWithForms;
 use Filament\Forms\Contracts\HasForms;
@@ -38,9 +37,12 @@ class LibelulaDebugger extends Page implements HasForms
             'nombre_cliente' => auth()->user()->name,
             'razon_social' => 'Usuario de Prueba',
             'numero_documento' => '1234567',
-            'concepto' => 'Factura de prueba',
+            'placa_vehiculo' => '5318FPG',
+            'codigo_producto' => '1',
+            'concepto' => 'Factura de prueba Sector 31',
             'monto' => 10,
             'descuento' => 0,
+            'descuento_global' => 0,
         ]);
     }
 
@@ -54,16 +56,18 @@ class LibelulaDebugger extends Page implements HasForms
                         TextInput::make('nombre_cliente')->required(),
                         TextInput::make('razon_social')->required(),
                         TextInput::make('numero_documento')->required()->label('NIT / CI'),
+                        TextInput::make('placa_vehiculo')
+                            ->required()
+                            ->default('5318FPG')
+                            ->label('Placa del Vehículo (Metadato Sector 31)'),
                     ])->columns(2),
 
                 Section::make('Detalle del Ítem a Facturar')
                     ->schema([
-                        Select::make('codigo_producto')
-                            ->label('Producto SIAT')
-                            ->options(\App\Models\Product::pluck('name', 'siat_product_code'))
-                            ->searchable()
+                        TextInput::make('codigo_producto')
+                            ->label('Código Producto SIAT')
                             ->required()
-                            ->default('99'),
+                            ->default('1'),
                         TextInput::make('concepto')
                             ->required()
                             ->label('Concepto / Detalle'),

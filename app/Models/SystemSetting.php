@@ -58,6 +58,9 @@ class SystemSetting extends Model
         return self::first() ?? new self([
             'platform_name' => 'E2V Charging Network',
             'libelula_api_url' => 'https://api.libelula.bo/rest',
+            'libelula_app_key' => 'a744e805-62f9-37bb-f3f6-beb3877079b8',
+            'libelula_canal_caja' => '23955c77e357e4c5da69917858462130b124019b9c9f3c3b6a70b55b6e4464cd',
+            'libelula_sector_code' => '31',
             'invoicing_policy' => 'recharge',
             'nit_requirement_policy' => 'optional',
         ]);
