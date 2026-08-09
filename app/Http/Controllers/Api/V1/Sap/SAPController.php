@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Http\Controllers\Api\V1\SAP;
+namespace App\Http\Controllers\Api\V1\Sap;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
