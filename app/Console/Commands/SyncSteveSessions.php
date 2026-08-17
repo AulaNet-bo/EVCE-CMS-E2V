@@ -10,6 +10,7 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
 use App\Services\SteveDataSource;
+use Carbon\Carbon;
 
 class SyncSteveSessions extends Command
 {
@@ -71,8 +72,13 @@ class SyncSteveSessions extends Command
                     );
 
                     $rfid = RfidTag::where('tag_code', $s->id_tag)->first();
-                    $startTime = $s->start_timestamp ?: $s->start_event_timestamp;
-                    $stopTime = $s->stop_timestamp;
+                    
+                    $rawStart = $s->start_timestamp ?: $s->start_event_timestamp;
+                    $startTime = $rawStart ? Carbon::createFromFormat('Y-m-d H:i:s', $rawStart, 'UTC')->setTimezone(config('app.timezone'))->format('Y-m-d H:i:s') : null;
+                    
+                    $rawStop = $s->stop_timestamp;
+                    $stopTime = $rawStop ? Carbon::createFromFormat('Y-m-d H:i:s', $rawStop, 'UTC')->setTimezone(config('app.timezone'))->format('Y-m-d H:i:s') : null;
+                    
                     $meterStart = is_numeric($s->start_value) ? (int) $s->start_value : 0;
                     $meterStop = is_numeric($s->stop_value) ? (int) $s->stop_value : 0;
                     $energyKwh = ($meterStop > $meterStart) ? round(($meterStop - $meterStart) / 1000, 4) : 0;
@@ -152,9 +158,12 @@ class SyncSteveSessions extends Command
                     $meterStop = is_numeric($tx->stop_value) ? (int) $tx->stop_value : 0;
                     $energyKwh = ($meterStop > $meterStart) ? round(($meterStop - $meterStart) / 1000, 4) : 0;
 
+                    $rawStop = $tx->stop_timestamp;
+                    $localStop = Carbon::createFromFormat('Y-m-d H:i:s', $rawStop, 'UTC')->setTimezone(config('app.timezone'))->format('Y-m-d H:i:s');
+
                     $session->update([
                         'status' => 'Completed',
-                        'stop_time' => $tx->stop_timestamp,
+                        'stop_time' => $localStop,
                         'meter_stop' => $meterStop,
                         'total_energy_kwh' => $energyKwh,
                         'stop_reason' => $tx->stop_reason,
