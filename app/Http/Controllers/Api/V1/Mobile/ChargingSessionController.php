@@ -188,7 +188,7 @@ class ChargingSessionController extends Controller
     public function start(Request $request, Station $station)
     {
         $request->validate([
-            'connector_id' => 'nullable|integer|min:1',
+            'connector_id' => 'required|integer|min:1',
             'vehicle_id' => 'nullable|integer|exists:vehicles,id',
         ]);
 
@@ -248,7 +248,7 @@ class ChargingSessionController extends Controller
             ], 422);
         }
 
-        $connectorId = (int) ($request->input('connector_id') ?: ($station->connectors()->orderBy('connector_id')->value('connector_id') ?? 1));
+        $connectorId = (int) $request->input('connector_id');
 
         // 1. Balance Validation (v3.1)
         // Set to a flat 14.90 BOB to ensure users with exactly 15.00 BOB (app-enforced minimum)
@@ -268,8 +268,6 @@ class ChargingSessionController extends Controller
                 'required' => 15.00,
             ], 402);
         }
-
-        $connectorId = (int) ($request->input('connector_id') ?: ($station->connectors()->orderBy('connector_id')->value('connector_id') ?? 1));
 
         $steve = app(SteveService::class);
         $result = $steve->remoteStart($station->charge_box_id, $connectorId, $tag->tag_code, $user->id);
@@ -339,16 +337,13 @@ class ChargingSessionController extends Controller
         $txId = $request->input('transaction_id');
 
         if (!$txId) {
-            $active = DB::connection('steve')
-                ->table('transaction as t')
-                ->join('connector as c', 'c.connector_pk', '=', 't.connector_pk')
-                ->where('c.charge_box_id', $station->charge_box_id)
-                ->whereNull('t.stop_timestamp')
-                ->orderByDesc('t.start_timestamp')
-                ->select('t.transaction_pk')
+            $activeSession = ChargingSession::where('user_id', $request->user()->id)
+                ->where('station_id', $station->id)
+                ->whereIn('status', ['Active', 'Starting'])
+                ->orderByDesc('created_at')
                 ->first();
 
-            $txId = $active->transaction_pk ?? null;
+            $txId = $activeSession?->transaction_id;
         }
 
         if (!$txId) {
